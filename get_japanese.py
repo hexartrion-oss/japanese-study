@@ -16,6 +16,13 @@ from fpdf.enums import XPos, YPos
 import requests
 from bs4 import BeautifulSoup
 
+try:
+    from playwright.sync_api import sync_playwright
+    from playwright_stealth import stealth_sync
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    PLAYWRIGHT_AVAILABLE = False
+
 # Windows 터미널 인코딩 문제 방지
 if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -100,6 +107,64 @@ def get_week_of_month(dt: datetime.date) -> int:
     return (dt.day + dt.replace(day=1).weekday() - 1) // 7 + 1
 
 
+# ── 크롤링: NHK Web Easy (playwright-stealth, N3~N4) ──
+def get_easy_article() -> tuple:
+    """NHK Web Easy에서 랜덤 기사 가져오기 (playwright-stealth 사용)."""
+    if not PLAYWRIGHT_AVAILABLE:
+        return None, None, ""
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            ctx = browser.new_context(
+                locale="ja-JP",
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            )
+            page = ctx.new_page()
+            stealth_sync(page)
+
+            # 기사 목록 JSON 취득
+            resp = page.goto(
+                "https://www3.nhk.or.jp/news/easy/news-list.json",
+                wait_until="networkidle", timeout=20000
+            )
+            if not resp or resp.status != 200:
+                browser.close()
+                return None, None, ""
+
+            data = resp.json()
+            # 날짜 키 중 가장 최근 것
+            date_key = sorted(data.keys())[-1]
+            articles = list(data[date_key].values())
+            random.shuffle(articles)
+
+            for article in articles[:5]:
+                news_id = article.get("news_id", "")
+                title   = article.get("title", "")
+                if not news_id:
+                    continue
+
+                url = f"https://www3.nhk.or.jp/news/easy/{news_id}/{news_id}.html"
+                page.goto(url, wait_until="networkidle", timeout=20000)
+
+                # 루비(후리가나) 제거 후 본문 추출
+                page.evaluate("document.querySelectorAll('rt,rp').forEach(e=>e.remove())")
+                content = page.query_selector("article") or page.query_selector(".article-body")
+                if not content:
+                    continue
+
+                text = content.inner_text().strip()
+                if text and len(text) > 200 and is_japanese(text):
+                    browser.close()
+                    return title, url, text
+
+            browser.close()
+    except Exception as e:
+        print(f"Easy article failed: {e}")
+
+    return None, None, ""
+
+
 # ── 크롤링: NHK News ──────────────────────────────────
 def get_news_article() -> tuple:
     """NHK뉴스 RSS에서 랜덤 기사 1개 가져오기."""
@@ -153,12 +218,23 @@ def get_news_article() -> tuple:
 
 
 def get_enough_lines(lo: int = 10) -> tuple:
-    """기사를 최대 3개까지 합쳐서 lo줄 이상 확보."""
+    """NHK Web Easy 우선 시도 → 실패 시 NHK 뉴스로 fallback, lo줄 확보."""
     combined_lines = []
     titles = []
     url_first = None
 
+    # 1순위: NHK Web Easy (N3~N4)
+    title, url, raw_text = get_easy_article()
+    if raw_text:
+        url_first = url
+        if title:
+            titles.append(title)
+        combined_lines.extend(extract_lines(raw_text, lo, lo))
+
+    # 부족하면 NHK 뉴스(N2~N1)로 보충
     for _ in range(3):
+        if len(combined_lines) >= lo:
+            break
         title, url, raw_text = get_news_article()
         if not raw_text:
             continue
@@ -166,13 +242,10 @@ def get_enough_lines(lo: int = 10) -> tuple:
             url_first = url
         if title:
             titles.append(title)
-        lines = extract_lines(raw_text, 3, 8)
-        combined_lines.extend(lines)
-        if len(combined_lines) >= lo:
-            break
+        combined_lines.extend(extract_lines(raw_text, 3, 6))
 
     combined_title = " / ".join(titles[:2]) if titles else "NHK News"
-    return combined_title, url_first, combined_lines
+    return combined_title, url_first, combined_lines[:lo]
 
 
 def sanitize_text(text: str) -> str:
@@ -320,9 +393,8 @@ def main():
     label = random.choice(plan)
     print(f"Today: {label}  |  {week_label}")
 
-    print("Fetching article from NHK News...")
+    print("Fetching article from NHK (Easy → News fallback)...")
     title, url, lines = get_enough_lines(lo=10)
-    lines = lines[:15]
     print(f"Article: {title}")
     print(f"Lines extracted: {len(lines)}")
 

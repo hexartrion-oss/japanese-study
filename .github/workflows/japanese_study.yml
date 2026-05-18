@@ -27,7 +27,10 @@ jobs:
           echo "Using font: $FONT"
 
       - name: 의존 라이브러리 설치
-        run: pip install requests beautifulsoup4 fpdf2 python-dotenv lxml
+        run: pip install requests beautifulsoup4 fpdf2 python-dotenv lxml playwright playwright-stealth
+
+      - name: Playwright 브라우저 설치
+        run: playwright install chromium --with-deps
 
       - name: 스크립트 실행
         env:
