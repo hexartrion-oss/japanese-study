@@ -19,13 +19,12 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 일본어 폰트 다운로드
+      - name: 일본어 폰트 설치
         run: |
-          # TTC(다국어 묶음) 대신 일본어 전용 OTF 직접 다운로드
-          wget -q -O /tmp/NotoSansJP.otf \
-            "https://github.com/googlefonts/noto-cjk/raw/main/Sans/OTF/Japanese/NotoSansCJKjp-Regular.otf"
-          echo "JAPANESE_FONT_PATH=/tmp/NotoSansJP.otf" >> $GITHUB_ENV
-          echo "Font downloaded: $(ls -lh /tmp/NotoSansJP.otf)"
+          sudo apt-get install -y fonts-ipafont-gothic
+          FONT=$(find /usr/share/fonts -name "ipag.ttf" -o -name "ipaexg.ttf" 2>/dev/null | head -1)
+          echo "JAPANESE_FONT_PATH=$FONT" >> $GITHUB_ENV
+          echo "Using font: $FONT"
 
       - name: 의존 라이브러리 설치
         run: pip install requests beautifulsoup4 fpdf2 python-dotenv lxml
