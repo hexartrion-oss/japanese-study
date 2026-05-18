@@ -2,6 +2,7 @@ import os
 import re
 import sys
 import glob
+import time
 import random
 import smtplib
 import datetime
@@ -16,7 +17,8 @@ import requests
 from bs4 import BeautifulSoup
 
 try:
-    import google.generativeai as genai
+    from google import genai as google_genai
+    from google.genai import types as genai_types
     GEMINI_AVAILABLE = True
 except ImportError:
     GEMINI_AVAILABLE = False
@@ -102,6 +104,41 @@ LEVEL_DESC["JPT 600"] = {**LEVEL_DESC["JLPT N2"], "desc": "JPT 600点（JLPT N2�
 LEVEL_DESC["JPT 700"] = {**LEVEL_DESC["JLPT N2"], "desc": "JPT 700点（JLPT N2上位相当）"}
 LEVEL_DESC["JPT 800"] = {**LEVEL_DESC["JLPT N1"], "desc": "JPT 800点（JLPT N1相当）"}
 LEVEL_DESC["JPT 900"] = {**LEVEL_DESC["JLPT N0"], "desc": "JPT 900点（JLPT N1超相当）"}
+
+
+# ── Gemini API 공통 호출 ──────────────────────────────
+def _call_gemini(prompt: str, temperature: float = 0.1, max_tokens: int = 1024) -> str:
+    """429 시 제안 대기 후 1회 재시도. 일일 한도 소진 시 즉시 포기."""
+    if not GEMINI_AVAILABLE or not GEMINI_API_KEY:
+        return ""
+    client = google_genai.Client(api_key=GEMINI_API_KEY)
+    for attempt in range(2):
+        try:
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(
+                    temperature=temperature,
+                    max_output_tokens=max_tokens,
+                ),
+            )
+            return response.text or ""
+        except Exception as e:
+            err = str(e)
+            is_quota = "429" in err or "quota" in err.lower()
+            is_daily = "PerDay" in err or "per_day" in err.lower()
+            if is_quota and is_daily:
+                print(f"[Gemini] 일일 할당량 소진 — 오늘은 더 이상 재시도하지 않음")
+                return ""
+            if is_quota and attempt == 0:
+                m = re.search(r"retry in (\d+(?:\.\d+)?)", err)
+                wait = int(float(m.group(1))) + 5 if m else 60
+                print(f"[Gemini] 분당 한도 초과. {wait}초 대기 후 재시도...")
+                time.sleep(wait)
+                continue
+            print(f"[Gemini] API 오류: {e}")
+            return ""
+    return ""
 
 
 # ── 폰트 탐색 ─────────────────────────────────────────
@@ -205,13 +242,9 @@ def select_title_with_gemini(title_pairs: list, label: str) -> tuple:
     레벨에 맞지 않는 단어가 포함된 제목은 건너뜀.
     """
     if not GEMINI_AVAILABLE or not GEMINI_API_KEY:
-        # Gemini 없으면 랜덤 선택
         return random.choice(title_pairs) if title_pairs else ("今日のできごと", "")
 
     lv = LEVEL_DESC.get(label, LEVEL_DESC["JLPT N3"])
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel("gemini-2.0-flash")
-
     title_list = "\n".join(f"{i+1}. {t}" for i, (t, _) in enumerate(title_pairs))
 
     prompt = f"""あなたはJLPT・JPT専門の日本語教師です。
@@ -227,19 +260,14 @@ def select_title_with_gemini(title_pairs: list, label: str) -> tuple:
 ・{lv['desc']}レベルに合わない難解な専門語を含むタイトルは選ばないこと
 ・選んだタイトルの番号だけを答えてください（例：3）"""
 
-    try:
-        response = model.generate_content(prompt)
-        answer = response.text.strip()
-        # 숫자만 추출
-        match = re.search(r"\d+", answer)
-        if match:
-            idx = int(match.group()) - 1
-            if 0 <= idx < len(title_pairs):
-                selected = title_pairs[idx]
-                print(f"Gemini selected title #{idx+1}: {selected[0]}")
-                return selected
-    except Exception as e:
-        print(f"Title selection failed: {e}")
+    answer = _call_gemini(prompt, temperature=0.0, max_tokens=10)
+    match = re.search(r"\d+", answer)
+    if match:
+        idx = int(match.group()) - 1
+        if 0 <= idx < len(title_pairs):
+            selected = title_pairs[idx]
+            print(f"Gemini selected title #{idx+1}: {selected[0]}")
+            return selected
 
     return title_pairs[0] if title_pairs else ("今日のできごと", "")
 
@@ -264,10 +292,7 @@ def write_story_with_gemini(news_title: str, label: str, attempt: int = 0) -> li
         return []
 
     lv = LEVEL_DESC.get(label, LEVEL_DESC["JLPT N3"])
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel("gemini-2.0-flash")
 
-    # 재시도 시 뉴스 제목 대신 단순 주제 사용
     if attempt >= 1:
         theme = _FALLBACK_TOPIC.get(label, "日常生活")
         print(f"[재시도 {attempt}] 폴백 주제 사용: {theme}")
@@ -299,23 +324,17 @@ def write_story_with_gemini(news_title: str, label: str, attempt: int = 0) -> li
 
 今すぐ10文の読み物を書いてください："""
 
-    try:
-        response = model.generate_content(
-            prompt,
-            generation_config={"temperature": 0.1, "max_output_tokens": 1024},
-        )
-        raw = response.text.strip()
-        # 마크다운 제거
-        raw = re.sub(r"\*+", "", raw)
-        raw = re.sub(r"^#+\s*", "", raw, flags=re.MULTILINE)
-        raw_lines = [l.strip() for l in raw.split("\n") if l.strip()]
-        print(f"Gemini raw output (attempt {attempt + 1}, {len(raw_lines)} lines):")
-        for i, l in enumerate(raw_lines, 1):
-            print(f"  {i}. {l[:80]}")
-        return raw_lines
-    except Exception as e:
-        print(f"Gemini story writing failed: {e}")
+    raw = _call_gemini(prompt, temperature=0.1, max_tokens=1024)
+    if not raw:
         return []
+
+    raw = re.sub(r"\*+", "", raw)
+    raw = re.sub(r"^#+\s*", "", raw, flags=re.MULTILINE)
+    raw_lines = [l.strip() for l in raw.split("\n") if l.strip()]
+    print(f"Gemini raw output (attempt {attempt + 1}, {len(raw_lines)} lines):")
+    for i, l in enumerate(raw_lines, 1):
+        print(f"  {i}. {l[:80]}")
+    return raw_lines
 
 
 # ── 메인 흐름 ─────────────────────────────────────────

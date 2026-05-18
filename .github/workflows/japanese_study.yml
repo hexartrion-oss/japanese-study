@@ -27,7 +27,7 @@ jobs:
           echo "Using font: $FONT"
 
       - name: 의존 라이브러리 설치
-        run: pip install requests beautifulsoup4 fpdf2 python-dotenv lxml google-generativeai
+        run: pip install requests beautifulsoup4 fpdf2 python-dotenv lxml google-genai
 
       - name: 스크립트 실행
         env:
