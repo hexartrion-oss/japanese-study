@@ -27,7 +27,7 @@ jobs:
           echo "Using font: $FONT"
 
       - name: 의존 라이브러리 설치
-        run: pip install requests beautifulsoup4 fpdf2 python-dotenv lxml playwright playwright-stealth
+        run: pip install requests beautifulsoup4 fpdf2 python-dotenv lxml playwright playwright-stealth google-generativeai
 
       - name: Playwright 브라우저 설치
         run: playwright install chromium --with-deps
@@ -36,4 +36,5 @@ jobs:
         env:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python get_japanese.py
