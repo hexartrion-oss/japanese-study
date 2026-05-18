@@ -61,7 +61,7 @@ JLPT_PLAN = ["JLPT N4", "JLPT N3", "JLPT N2", "JLPT N1", "JLPT N0"]
 LEVEL_DESC = {
     "JLPT N4": {
         "desc": "JLPT N4（基礎）",
-        "vocab": "小学校3〜4年生レベルの語彙のみ。株・金利・政策などの専門語は一切使わない。",
+        "vocab": "小学校3〜4年生レベルの語彙のみ。株・金利・政策・外交などの専門語は一切使わない。",
         "topic": "買い物・学校・天気・家族・食事・趣味・日常のできごと。",
         "grammar": "〜ます・〜です・〜てから・〜ので・〜たい・〜ている など基本文型のみ。",
         "example": "「今日は天気がいいので、友達と公園に行きました。」",
@@ -142,48 +142,123 @@ def get_week_of_month(dt: datetime.date) -> int:
     return (dt.day + dt.replace(day=1).weekday() - 1) // 7 + 1
 
 
-def validate_sentences(lines: list) -> list:
-    """。！？로 끝나지 않는 문장 제거 (불완전 문장 차단)."""
-    valid = []
-    for line in lines:
+# ── 문장 완성도 검증 ──────────────────────────────────
+def validate_sentences(sentences: list, label: str) -> list:
+    """
+    각 문장이 。！？로 끝나는지 확인.
+    불완전 문장 발견 시 전체 내용을 터미널에 출력하고 빈 리스트 반환.
+    """
+    cleaned = []
+    for line in sentences:
         line = sanitize_text(line.strip())
-        # 번호·기호 제거
         line = re.sub(r"^[\d\.\-・\*\①-⑩\s]+", "", line).strip()
-        if not line:
+        if not line or not is_japanese(line):
             continue
-        if line[-1] in "。！？" and is_japanese(line) and len(line) >= 10:
-            valid.append(line)
-        else:
-            print(f"  [제거] 불완전 문장: {line[:40]}...")
-    return valid
+        cleaned.append(line)
+
+    # 불완전 문장 검사
+    incomplete = [s for s in cleaned if s and s[-1] not in "。！？"]
+    if incomplete:
+        print("\n" + "="*60)
+        print(f"[경고] 불완전 문장 발견 — 이메일 전송 중단")
+        print(f"레벨: {label}")
+        print("="*60)
+        print("[생성된 전체 내용]")
+        for i, s in enumerate(cleaned, 1):
+            mark = " ← 불완전" if s[-1] not in "。！？" else ""
+            print(f"{i:2}. {s}{mark}")
+        print("="*60)
+        return []  # 빈 리스트 반환 → PDF 저장 안 함
+
+    # 길이 미달 문장 제거 (10자 미만)
+    valid = [s for s in cleaned if len(s) >= 10]
+    return valid[:10]
 
 
-# ── RSS에서 뉴스 제목만 수집 ──────────────────────────
-def crawl_news_title() -> tuple:
-    """NHK RSS에서 뉴스 제목 하나만 가져오기 (본문 크롤링 없음)."""
+# ── 1단계: RSS에서 제목 5~7개 수집 ───────────────────
+def crawl_titles(count: int = 7) -> list:
+    """NHK RSS에서 뉴스 제목 여러 개 수집."""
+    titles = []
+    urls   = []
     try:
         rss_url = random.choice(NHK_RSS_LIST)
         r = requests.get(rss_url, headers=HEADERS, timeout=15)
         r.raise_for_status()
-        soup = BeautifulSoup(r.text, "xml")
+        soup  = BeautifulSoup(r.text, "xml")
         items = soup.find_all("item")
         random.shuffle(items)
-        for item in items:
-            title_tag = item.find("title")
-            link_tag  = item.find("link")
-            if title_tag and link_tag:
-                title = title_tag.text.strip()
-                url   = link_tag.text.strip()
-                if is_japanese(title):
-                    return title, url
+        for item in items[:count]:
+            t = item.find("title")
+            l = item.find("link")
+            if t and l and is_japanese(t.text.strip()):
+                titles.append(t.text.strip())
+                urls.append(l.text.strip())
     except Exception as e:
         print(f"RSS crawl failed: {e}")
-    return "今日のできごと", ""
+    return list(zip(titles, urls))
 
 
-# ── Gemini: 제목 기반 소설 창작 ───────────────────────
-def write_story_with_gemini(news_title: str, label: str) -> list:
-    """뉴스 제목을 주제로 Gemini가 지정 레벨 소설(읽기 지문)을 창작."""
+# ── 2단계: Gemini가 레벨에 맞는 제목 선택 ─────────────
+def select_title_with_gemini(title_pairs: list, label: str) -> tuple:
+    """
+    수집된 제목들 중 해당 레벨에 가장 적합한 제목 1개를 Gemini가 선택.
+    레벨에 맞지 않는 단어가 포함된 제목은 건너뜀.
+    """
+    if not GEMINI_AVAILABLE or not GEMINI_API_KEY:
+        # Gemini 없으면 랜덤 선택
+        return random.choice(title_pairs) if title_pairs else ("今日のできごと", "")
+
+    lv = LEVEL_DESC.get(label, LEVEL_DESC["JLPT N3"])
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel("gemini-2.0-flash")
+
+    title_list = "\n".join(f"{i+1}. {t}" for i, (t, _) in enumerate(title_pairs))
+
+    prompt = f"""あなたはJLPT・JPT専門の日本語教師です。
+
+【今日のレベル】{lv['desc']}
+【レベルの語彙基準】{lv['vocab']}
+【レベルの話題基準】{lv['topic']}
+
+【ニュースタイトル一覧】
+{title_list}
+
+上記のタイトルの中から、{lv['desc']}レベルの学習者に最も適したテーマのタイトルを1つ選んでください。
+・{lv['desc']}レベルに合わない難解な専門語を含むタイトルは選ばないこと
+・選んだタイトルの番号だけを答えてください（例：3）"""
+
+    try:
+        response = model.generate_content(prompt)
+        answer = response.text.strip()
+        # 숫자만 추출
+        match = re.search(r"\d+", answer)
+        if match:
+            idx = int(match.group()) - 1
+            if 0 <= idx < len(title_pairs):
+                selected = title_pairs[idx]
+                print(f"Gemini selected title #{idx+1}: {selected[0]}")
+                return selected
+    except Exception as e:
+        print(f"Title selection failed: {e}")
+
+    return title_pairs[0] if title_pairs else ("今日のできごと", "")
+
+
+# ── 레벨별 폴백 주제 ──────────────────────────────────
+_FALLBACK_TOPIC = {
+    "JLPT N4": "買い物と日常生活",   "JPT 300": "買い物と日常生活",
+    "JPT 400": "学校と友達",
+    "JLPT N3": "旅行と地域の話",     "JPT 500": "旅行と地域の話",
+    "JLPT N2": "仕事と社会生活",     "JPT 600": "仕事と社会生活",
+    "JPT 700": "環境と健康",
+    "JLPT N1": "社会問題と文化",     "JPT 800": "社会問題と文化",
+    "JLPT N0": "科学技術と哲学",     "JPT 900": "科学技術と哲学",
+}
+
+
+# ── 3단계: Gemini가 소설 창작 ─────────────────────────
+def write_story_with_gemini(news_title: str, label: str, attempt: int = 0) -> list:
+    """선택된 제목을 주제로 Gemini가 지정 레벨 소설(10문장) 창작. 재시도 시 attempt 증가."""
     if not GEMINI_AVAILABLE or not GEMINI_API_KEY:
         print("Gemini API not available.")
         return []
@@ -192,53 +267,85 @@ def write_story_with_gemini(news_title: str, label: str) -> list:
     genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel("gemini-2.0-flash")
 
-    prompt = f"""あなたはJLPT・JPT専門の日本語教師です。
+    # 재시도 시 뉴스 제목 대신 단순 주제 사용
+    if attempt >= 1:
+        theme = _FALLBACK_TOPIC.get(label, "日常生活")
+        print(f"[재시도 {attempt}] 폴백 주제 사용: {theme}")
+    else:
+        theme = news_title
 
-【今日のニュースタイトル】
-「{news_title}」
+    prompt = f"""あなたは日本語教師です。今から{lv['desc']}レベルの学習者向けに読み物を書きます。
 
-【あなたのタスク】
-上記のタイトルをテーマに、{lv['desc']}レベルの短い読み物（小説風・10文）を
-完全にゼロから創作してください。
-ニュース記事をそのまま要約するのではなく、テーマを活かした読み物として書くこと。
+【テーマ】「{theme}」に関連した日常的な場面
 
-【レベル基準を先に確認してから書くこと】
-レベル: {lv['desc']}
-使用語彙: {lv['vocab']}
-話題設定: {lv['topic']}
-使用文法: {lv['grammar']}
-レベル例文: {lv['example']}
+【語彙制限 — 絶対厳守】
+{lv['vocab']}
+※ 上記レベル外の語彙・専門用語・経済用語・政治用語は一切使用禁止
 
-【出力ルール — 厳守】
-・10文ちょうど出力すること
-・1行に1文のみ（改行で区切る）
-・各文は必ず「。」か「！」か「？」のどれかで終わること
-・文が途中で切れることは絶対に禁止
-・番号・記号・ふりがな・説明文・コメントは一切書かないこと"""
+【使用する文法パターン】
+{lv['grammar']}
+
+【参考例文のレベル感】
+{lv['example']}
+
+【出力ルール — 全て絶対厳守】
+1. 文章のみを出力する（タイトル・ヘッダー・番号・説明・コメント禁止）
+2. マークダウン記号（**、##など）は一切使用しない
+3. 10文ちょうど出力する（少なくても多くても禁止）
+4. 1行に1文のみ、改行で区切る
+5. 各文は必ず「。」「！」「？」のいずれかで終わること（これは絶対条件）
+6. 文が途中で切れることは絶対禁止
+7. 最後の文も必ず「。」「！」「？」で終わること
+
+今すぐ10文の読み物を書いてください："""
 
     try:
-        response = model.generate_content(prompt)
-        raw_lines = [l.strip() for l in response.text.strip().split("\n") if l.strip()]
-        sentences = validate_sentences(raw_lines)
-        print(f"Gemini wrote {len(sentences)} valid sentences for [{label}].")
-        return sentences[:10]
+        response = model.generate_content(
+            prompt,
+            generation_config={"temperature": 0.1, "max_output_tokens": 1024},
+        )
+        raw = response.text.strip()
+        # 마크다운 제거
+        raw = re.sub(r"\*+", "", raw)
+        raw = re.sub(r"^#+\s*", "", raw, flags=re.MULTILINE)
+        raw_lines = [l.strip() for l in raw.split("\n") if l.strip()]
+        print(f"Gemini raw output (attempt {attempt + 1}, {len(raw_lines)} lines):")
+        for i, l in enumerate(raw_lines, 1):
+            print(f"  {i}. {l[:80]}")
+        return raw_lines
     except Exception as e:
-        print(f"Gemini failed: {e}")
+        print(f"Gemini story writing failed: {e}")
         return []
 
 
-# ── 메인 수집+창작 ─────────────────────────────────────
+# ── 메인 흐름 ─────────────────────────────────────────
 def fetch_study_lines(label: str) -> tuple:
-    """뉴스 제목 수집 → Gemini가 해당 레벨 소설 창작 → 문장 검증."""
-    title, url = crawl_news_title()
-    print(f"News title: {title}")
+    """
+    1) RSS에서 제목 수집
+    2) Gemini가 레벨에 맞는 제목 선택
+    3) Gemini가 소설 창작 (최대 3회 재시도)
+    4) 문장 완성도 검증
+    """
+    # 1단계: 제목 수집
+    title_pairs = crawl_titles(count=7)
+    if not title_pairs:
+        title_pairs = [("今日のできごと", "")]
+    print(f"Collected {len(title_pairs)} titles.")
 
-    sentences = write_story_with_gemini(title, label)
+    # 2단계: 레벨에 맞는 제목 선택
+    selected_title, selected_url = select_title_with_gemini(title_pairs, label)
+    print(f"Selected: {selected_title}")
 
-    if not sentences:
-        print("Gemini failed — no content to send.")
+    # 3단계 + 4단계: 소설 창작 → 검증 (최대 3회 재시도)
+    for attempt in range(3):
+        raw_lines = write_story_with_gemini(selected_title, label, attempt=attempt)
+        sentences = validate_sentences(raw_lines, label)
+        if sentences:
+            return selected_title, selected_url, sentences
+        if attempt < 2:
+            print(f"[재시도 {attempt + 1}/3] 문장 검증 실패, 다시 생성합니다...")
 
-    return title, url, sentences
+    return selected_title, selected_url, []
 
 
 # ── PDF 생성 ───────────────────────────────────────────
@@ -272,8 +379,7 @@ def build_pdf(label: str, title: str, url: str,
 
     pdf.set_font("JP", size=9)
     pdf.set_text_color(120, 120, 120)
-    safe_title = title if title else "NHK News"
-    pdf.cell(0, 6, f"テーマ: {safe_title}",
+    pdf.cell(0, 6, f"テーマ: {title if title else 'NHK News'}",
              new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     if url:
         pdf.cell(0, 5, url[:80], new_x=XPos.LMARGIN, new_y=YPos.NEXT)
@@ -281,13 +387,8 @@ def build_pdf(label: str, title: str, url: str,
     pdf.ln(5)
 
     pdf.set_font("JP", size=11)
-    if lines:
-        for line in lines:
-            pdf.multi_cell(0, 8, line, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-    else:
-        pdf.set_text_color(200, 0, 0)
-        pdf.multi_cell(0, 8, "記事を取得できませんでした。",
-                       new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    for line in lines:
+        pdf.multi_cell(0, 8, line, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
     pdf.output(OUTPUT_PDF)
     print(f"PDF saved: {OUTPUT_PDF}  ({len(lines)} lines)")
@@ -299,7 +400,7 @@ def send_email(date_str: str, label: str, mode: str):
         print("Email credentials not set — skipping.")
         return
     if "입력" in str(GMAIL_APP_PW) or len(str(GMAIL_APP_PW)) < 10:
-        print("App password placeholder detected — skipping email.")
+        print("App password placeholder — skipping email.")
         return
     try:
         msg = MIMEMultipart()
@@ -344,10 +445,15 @@ def main():
     label = random.choice(plan)
     print(f"Today: {label}  |  {week_label}")
 
-    title, url, lines = fetch_study_lines(label)
-    print(f"Lines validated: {len(lines)}")
+    title, url, sentences = fetch_study_lines(label)
 
-    build_pdf(label, title, url, lines, date_str, week_label, mode)
+    # 불완전 문장 → 전송 중단 (validate_sentences에서 빈 리스트 반환됨)
+    if not sentences:
+        print("[중단] 유효한 문장이 없어 PDF/이메일 전송을 건너뜁니다.")
+        sys.exit(1)
+
+    print(f"Lines validated: {len(sentences)}")
+    build_pdf(label, title, url, sentences, date_str, week_label, mode)
     send_email(date_str, label, mode)
     print("Done!")
 
