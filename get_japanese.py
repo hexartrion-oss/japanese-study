@@ -32,7 +32,20 @@ except ImportError:
     pass
 
 OUTPUT_PDF = os.path.join(os.path.dirname(__file__), "JPN.pdf")
-HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; StudyBot/1.0)"}
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept-Language": "ja,en;q=0.9",
+}
+
+NHK_RSS_LIST = [
+    "https://www3.nhk.or.jp/rss/news/cat0.xml",  # 全ニュース
+    "https://www3.nhk.or.jp/rss/news/cat1.xml",  # 社会
+    "https://www3.nhk.or.jp/rss/news/cat2.xml",  # 経済
+    "https://www3.nhk.or.jp/rss/news/cat3.xml",  # 政治
+    "https://www3.nhk.or.jp/rss/news/cat4.xml",  # 国際
+    "https://www3.nhk.or.jp/rss/news/cat5.xml",  # 科学・文化
+    "https://www3.nhk.or.jp/rss/news/cat6.xml",  # スポーツ
+]
 
 # ── 레벨 정의 ─────────────────────────────────────────
 JPT_PLAN = [
@@ -87,40 +100,79 @@ def get_week_of_month(dt: datetime.date) -> int:
     return (dt.day + dt.replace(day=1).weekday() - 1) // 7 + 1
 
 
-# ── 크롤링: Wikipedia 일본어 API ──────────────────────
-def get_wikipedia_article() -> tuple:
-    """
-    Wikipedia 일본어판에서 랜덤 기사 1개 가져오기.
-    반환: (제목, URL, 본문 텍스트)
-    """
-    api = "https://ja.wikipedia.org/w/api.php"
+# ── 크롤링: NHK News ──────────────────────────────────
+def get_news_article() -> tuple:
+    """NHK뉴스 RSS에서 랜덤 기사 1개 가져오기."""
+    rss_url = random.choice(NHK_RSS_LIST)
 
-    # 랜덤 기사 5개 후보
-    r = requests.get(api, params={
-        "action": "query", "list": "random",
-        "rnnamespace": 0, "rnlimit": 5, "format": "json"
-    }, headers=HEADERS, timeout=15)
-    r.raise_for_status()
-    candidates = r.json()["query"]["random"]
+    try:
+        r = requests.get(rss_url, headers=HEADERS, timeout=15)
+        r.raise_for_status()
+    except Exception:
+        # cat별 RSS 실패 시 전체 RSS 시도
+        r = requests.get(NHK_RSS_LIST[0], headers=HEADERS, timeout=15)
+        r.raise_for_status()
 
-    for candidate in candidates:
-        title = candidate["title"]
-        # 본문 평문 취득
-        r2 = requests.get(api, params={
-            "action": "query", "titles": title,
-            "prop": "extracts", "explaintext": True,
-            "exsectionformat": "plain", "format": "json"
-        }, headers=HEADERS, timeout=15)
-        r2.raise_for_status()
-        pages = r2.json()["query"]["pages"]
-        page  = next(iter(pages.values()))
-        text  = page.get("extract", "").strip()
+    soup = BeautifulSoup(r.text, "xml")
+    items = soup.find_all("item")
+    if not items:
+        return None, None, ""
 
-        if text and len(text) > 300 and is_japanese(text):
-            url = f"https://ja.wikipedia.org/wiki/{title}"
-            return title, url, text
+    random.shuffle(items)
+
+    for item in items:
+        title_tag = item.find("title")
+        link_tag  = item.find("link")
+        if not title_tag or not link_tag:
+            continue
+
+        title = title_tag.text.strip()
+        url   = link_tag.text.strip()
+
+        try:
+            r2 = requests.get(url, headers=HEADERS, timeout=15)
+            r2.raise_for_status()
+        except Exception:
+            continue
+
+        soup2 = BeautifulSoup(r2.text, "html.parser")
+
+        for tag in soup2.find_all(["script", "style", "nav", "header", "footer", "aside"]):
+            tag.decompose()
+
+        paragraphs = []
+        for p in soup2.find_all("p"):
+            text = p.get_text().strip()
+            if len(text) > 20 and is_japanese(text):
+                paragraphs.append(text)
+
+        if len(paragraphs) >= 3:
+            return title, url, "\n".join(paragraphs)
 
     return None, None, ""
+
+
+def get_enough_lines(lo: int = 10) -> tuple:
+    """기사를 최대 3개까지 합쳐서 lo줄 이상 확보."""
+    combined_lines = []
+    titles = []
+    url_first = None
+
+    for _ in range(3):
+        title, url, raw_text = get_news_article()
+        if not raw_text:
+            continue
+        if url_first is None:
+            url_first = url
+        if title:
+            titles.append(title)
+        lines = extract_lines(raw_text, 3, 8)
+        combined_lines.extend(lines)
+        if len(combined_lines) >= lo:
+            break
+
+    combined_title = " / ".join(titles[:2]) if titles else "NHK News"
+    return combined_title, url_first, combined_lines
 
 
 def sanitize_text(text: str) -> str:
@@ -133,13 +185,18 @@ def sanitize_text(text: str) -> str:
 
 
 def extract_lines(raw_text: str, lo: int = 10, hi: int = 15) -> list:
-    """본문을 문장 단위로 분리 → lo~hi 줄 연속 발췌."""
+    """뉴스 본문을 문장 단위로 분리 → lo~hi 문장 연속 발췌."""
     text = sanitize_text(raw_text)
-    # 섹션 헤더(== ... ==) 제거
-    text = re.sub(r"=+[^=]+=+", "", text)
-    # 문장 분리
-    sentences = [s.strip() for s in re.split(r"(?<=[。！？])", text) if s.strip()]
-    sentences = [s for s in sentences if is_japanese(s) and len(s) > 5]
+    # 단락 → 문장 분리
+    sentences = []
+    for para in text.split("\n"):
+        para = para.strip()
+        if not para:
+            continue
+        parts = [s.strip() for s in re.split(r"(?<=[。！？])", para) if s.strip()]
+        sentences.extend(parts)
+
+    sentences = [s for s in sentences if is_japanese(s) and len(s) > 10]
 
     if not sentences:
         return []
@@ -186,7 +243,7 @@ def build_pdf(label: str, title: str, url: str,
     # ─ 出典
     pdf.set_font("JP", size=9)
     pdf.set_text_color(120, 120, 120)
-    safe_title = title if title else "Wikipedia"
+    safe_title = title if title else "NHK News"
     pdf.cell(0, 6, f"出典: {safe_title}",
              new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     if url:
@@ -263,9 +320,9 @@ def main():
     label = random.choice(plan)
     print(f"Today: {label}  |  {week_label}")
 
-    print("Fetching article from Wikipedia...")
-    title, url, raw_text = get_wikipedia_article()
-    lines = extract_lines(raw_text, 10, 15)
+    print("Fetching article from NHK News...")
+    title, url, lines = get_enough_lines(lo=10)
+    lines = lines[:15]
     print(f"Article: {title}")
     print(f"Lines extracted: {len(lines)}")
 
