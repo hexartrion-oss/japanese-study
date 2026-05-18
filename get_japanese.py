@@ -231,54 +231,71 @@ def crawl_news_article() -> tuple:
     return None, None, ""
 
 
-# ── Gemini: 레벨별 예문 재작성 ────────────────────────
-def rewrite_with_gemini(raw_text: str, label: str) -> list:
-    """크롤링한 원문을 Gemini가 지정 레벨 예문 10문장으로 재작성."""
+# ── 주제 키워드 추출 ──────────────────────────────────
+def extract_topic_hint(title: str, raw_text: str) -> str:
+    """원문에서 주제 힌트(제목 + 첫 2문장)만 추출. Gemini에 원문 전달 금지."""
+    sentences = []
+    for para in sanitize_text(raw_text).split("\n"):
+        parts = [s.strip() for s in re.split(r"(?<=[。！？])", para) if s.strip()]
+        sentences.extend(parts)
+    sentences = [s for s in sentences if is_japanese(s) and len(s) > 10]
+    first_two = "　".join(sentences[:2]) if sentences else ""
+    return f"{title}。{first_two}"
+
+
+# ── Gemini: 주제 기반 창작 ────────────────────────────
+def generate_with_gemini(topic_hint: str, label: str) -> list:
+    """주제 힌트를 바탕으로 Gemini가 지정 레벨 문장을 새로 창작."""
     if not GEMINI_AVAILABLE or not GEMINI_API_KEY:
-        print("Gemini not available — using raw sentences.")
+        print("Gemini not available.")
         return []
 
     lv = LEVEL_DESC.get(label, LEVEL_DESC["JLPT N3"])
     genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel("gemini-2.0-flash")
 
-    prompt = f"""あなたは日本語能力試験の専門家です。
-以下の参考記事を元に、{lv['desc']}の例文を正確に10文作成してください。
+    prompt = f"""あなたはJLPT・JPT専門の日本語教師です。
 
-【レベル要件 — 厳守】
-・語彙: {lv['vocab']}
-・話題: {lv['topic']}
-・文法: {lv['grammar']}
-・参考例文: {lv['example']}
+【今日のニュース話題ヒント】
+{topic_hint}
 
-【出力形式 — 厳守】
-・1行につき1文のみ
-・各文は必ず「。」「！」「？」のいずれかで終わること
-・途中で切れた不完全な文は絶対に出力しないこと
-・番号・記号・ふりがな・説明文は一切不要
-・必ず10文出力すること
+【あなたのタスク】
+上記の話題からヒントを得て、{lv['desc']}レベルの学習者向けの短い読み物を
+完全にゼロから新しく創作してください。
+元のニュース記事をそのまま使わず、テーマだけ参考にして書くこと。
 
-【参考記事（話題の参考のみ。語彙・難易度は上記レベルに合わせること）】
-{sanitize_text(raw_text)[:800]}"""
+【レベル要件 — 絶対厳守】
+・語彙制限: {lv['vocab']}
+・話題設定: {lv['topic']}
+・使用文法: {lv['grammar']}
+・レベル確認例: {lv['example']}
+
+【出力ルール — 絶対厳守】
+・10文ちょうど出力すること
+・1行に1文のみ（改行で区切る）
+・各文は必ず「。」または「！」または「？」で終わること
+・文が途中で切れることは絶対に禁止
+・番号・記号・ふりがな・説明・コメントは一切書かないこと
+・{lv['desc']}のレベルに合わない難しい単語・文法が1つでもあれば書き直すこと"""
 
     try:
         response = model.generate_content(prompt)
         raw_lines = [l.strip() for l in response.text.strip().split("\n") if l.strip()]
         sentences = []
         for line in raw_lines:
-            line = re.sub(r"^[\d\.\-・\*\s]+", "", line).strip()
-            if is_japanese(line) and line and line[-1] in "。！？" and len(line) >= 15:
+            line = re.sub(r"^[\d\.\-・\*\①-⑩\s]+", "", line).strip()
+            if is_japanese(line) and line and line[-1] in "。！？" and len(line) >= 10:
                 sentences.append(line)
-        print(f"Gemini generated {len(sentences)} valid sentences.")
+        print(f"Gemini created {len(sentences)} sentences for [{label}].")
         return sentences[:10]
     except Exception as e:
-        print(f"Gemini rewrite failed: {e}")
+        print(f"Gemini generation failed: {e}")
         return []
 
 
-# ── 메인 크롤링+재작성 ────────────────────────────────
+# ── 메인 크롤링+창작 ──────────────────────────────────
 def fetch_study_lines(label: str) -> tuple:
-    """Easy → News 순서로 크롤링 후 Gemini로 레벨 맞게 재작성."""
+    """크롤링으로 주제 힌트 수집 → Gemini가 해당 레벨로 새로 창작."""
     # 1순위: NHK Web Easy
     title, url, raw_text = crawl_easy_article()
     source = "NHK Web Easy"
@@ -289,16 +306,21 @@ def fetch_study_lines(label: str) -> tuple:
         source = "NHK News"
 
     if not raw_text:
-        print("All crawling failed.")
-        return "取得失敗", None, []
+        print("All crawling failed — Gemini will create freely.")
+        title, url = "今日のニュース", None
+        raw_text = ""
 
     print(f"Source: {source} / {title}")
 
-    # Gemini로 레벨 맞게 재작성
-    sentences = rewrite_with_gemini(raw_text, label)
+    # 주제 키워드만 추출 (원문 전체는 Gemini에 전달 안 함)
+    topic_hint = extract_topic_hint(title or "", raw_text)
+    print(f"Topic hint: {topic_hint[:80]}")
 
-    # Gemini 실패 시 원문에서 직접 추출 (fallback)
-    if not sentences:
+    # Gemini가 해당 레벨로 새로 창작
+    sentences = generate_with_gemini(topic_hint, label)
+
+    # Gemini 실패 시 원문 문장 그대로 fallback
+    if not sentences and raw_text:
         raw_sentences = []
         for para in sanitize_text(raw_text).split("\n"):
             parts = [s.strip() for s in re.split(r"(?<=[。！？])", para) if s.strip()]
