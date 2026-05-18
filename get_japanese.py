@@ -49,17 +49,28 @@ JLPT_PLAN = ["JLPT N4", "JLPT N3", "JLPT N2", "JLPT N1", "JLPT N0"]
 
 # ── 폰트 탐색 ─────────────────────────────────────────
 def find_font() -> str:
+    # 환경변수로 폰트 경로를 직접 지정한 경우
+    env_font = os.environ.get("JAPANESE_FONT_PATH")
+    if env_font and os.path.exists(env_font):
+        return env_font
+
     if platform.system() == "Windows":
         for f in [r"C:\Windows\Fonts\msgothic.ttc",
                   r"C:\Windows\Fonts\meiryo.ttc",
                   r"C:\Windows\Fonts\YuGothR.ttc"]:
             if os.path.exists(f):
                 return f
+
     for pattern in [
+        # GitHub Actions: apt fonts-noto-cjk 설치 경로
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/opentype/noto/NotoSansCJKjp-Regular.otf",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/noto-cjk/*Regular*.ttc",
         "/usr/share/fonts/**/*CJK*Regular*.otf",
         "/usr/share/fonts/**/*CJK*Regular*.ttc",
+        "/usr/share/fonts/**/*Noto*JP*.otf",
+        "/usr/share/fonts/**/*Noto*JP*.ttf",
     ]:
         hits = glob.glob(pattern, recursive=True)
         if hits:
