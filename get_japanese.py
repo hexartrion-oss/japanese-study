@@ -62,19 +62,50 @@ NHK_RSS_LIST = [
 ]
 
 LEVEL_DESC = {
-    "JLPT N4": "JLPT N4（基礎）: 小学校高学年レベルの語彙・文法。短く簡単な文。日常生活の話題。",
-    "JLPT N3": "JLPT N3（初中級）: 日常的な話題。接続詞・複文あり。やや長い文も可。",
-    "JLPT N2": "JLPT N2（中級）: 新聞・雑誌が読める程度。抽象的な内容も含む。",
-    "JLPT N1": "JLPT N1（上級）: 評論・社説レベル。複雑な文法・語彙。論理的な文章。",
-    "JLPT N0": "JLPT N1超（専門）: 学術・専門的文章。非常に複雑な語彙と文法構造。",
-    "JPT 300": "JPT 300点相当 = JLPT N4（基礎）: 短く簡単な日常文。",
-    "JPT 400": "JPT 400点相当 = JLPT N4（基礎上位）: やや長い日常文。",
-    "JPT 500": "JPT 500点相当 = JLPT N3（初中級）: 日常・社会的な話題。",
-    "JPT 600": "JPT 600点相当 = JLPT N2（中級）: 社会・経済的な話題。",
-    "JPT 700": "JPT 700点相当 = JLPT N2上位（中上級）: 幅広い話題・やや複雑な文。",
-    "JPT 800": "JPT 800点相当 = JLPT N1（上級）: 評論・報道レベル。",
-    "JPT 900": "JPT 900点相当 = JLPT N1超（最上級）: 専門的・学術的内容。",
+    "JLPT N4": {
+        "desc": "JLPT N4（基礎）",
+        "vocab": "小学校レベルの簡単な語彙のみ使う。経済・政治・専門用語は絶対に使わない。",
+        "topic": "日常生活・買い物・学校・天気・家族・食べ物・趣味など身近な話題に変換して書く。",
+        "grammar": "〜ます／〜です、〜てから、〜ので、〜たい、〜ている など基本文型のみ。",
+        "example": "例：「今日は天気がいいので、友達と公園に行きました。」",
+    },
+    "JLPT N3": {
+        "desc": "JLPT N3（初中級）",
+        "vocab": "日常的な語彙。難しい専門用語（株価・金融・政策等）は使わず、身近な言葉に置き換える。",
+        "topic": "日常生活・仕事・旅行・社会の身近な出来事。元記事が専門的な場合は日常的な話題に変換。",
+        "grammar": "〜ながら、〜ばかり、〜ために、〜によって、〜ようになる など初中級文型。",
+        "example": "例：「最近、健康のために毎朝ジョギングをする人が増えています。」",
+    },
+    "JLPT N2": {
+        "desc": "JLPT N2（中級）",
+        "vocab": "新聞・雑誌レベルの語彙。社会・経済の一般的な話題。",
+        "topic": "社会問題・環境・経済の一般的な話題。元記事のテーマを活用してよい。",
+        "grammar": "〜に加えて、〜ざるを得ない、〜に伴い、〜をめぐって など中級文型。",
+        "example": "例：「少子化が進む中、政府はさまざまな対策を講じています。」",
+    },
+    "JLPT N1": {
+        "desc": "JLPT N1（上級）",
+        "vocab": "評論・社説レベル。専門用語も可。",
+        "topic": "政治・経済・社会問題・文化。元記事のテーマをそのまま活用。",
+        "grammar": "〜にほかならない、〜をもって、〜いかんによって など上級文型。",
+        "example": "例：「経済格差の拡大は、社会の分断を招きかねないという懸念が高まっている。」",
+    },
+    "JLPT N0": {
+        "desc": "JLPT N1超（専門・学術）",
+        "vocab": "専門的・学術的語彙。高度な表現。",
+        "topic": "学術・専門・政策・哲学的内容。",
+        "grammar": "複雑な複文・倒置・専門的文体。",
+        "example": "例：「量子コンピュータの実用化は、現行の暗号化技術に根本的な見直しを迫るものと予見されている。」",
+    },
 }
+# JPT → JLPT 매핑
+LEVEL_DESC["JPT 300"] = {**LEVEL_DESC["JLPT N4"], "desc": "JPT 300点（JLPT N4相当）"}
+LEVEL_DESC["JPT 400"] = {**LEVEL_DESC["JLPT N4"], "desc": "JPT 400点（JLPT N4上位相当）"}
+LEVEL_DESC["JPT 500"] = {**LEVEL_DESC["JLPT N3"], "desc": "JPT 500点（JLPT N3相当）"}
+LEVEL_DESC["JPT 600"] = {**LEVEL_DESC["JLPT N2"], "desc": "JPT 600点（JLPT N2相当）"}
+LEVEL_DESC["JPT 700"] = {**LEVEL_DESC["JLPT N2"], "desc": "JPT 700点（JLPT N2上位相当）"}
+LEVEL_DESC["JPT 800"] = {**LEVEL_DESC["JLPT N1"], "desc": "JPT 800点（JLPT N1相当）"}
+LEVEL_DESC["JPT 900"] = {**LEVEL_DESC["JLPT N0"], "desc": "JPT 900点（JLPT N1超相当）"}
 
 # ── 레벨 정의 ─────────────────────────────────────────
 JPT_PLAN  = ["JPT 300", "JPT 400", "JPT 500", "JPT 600", "JPT 700", "JPT 800", "JPT 900"]
@@ -207,26 +238,38 @@ def rewrite_with_gemini(raw_text: str, label: str) -> list:
         print("Gemini not available — using raw sentences.")
         return []
 
-    level_desc = LEVEL_DESC.get(label, "JLPT N3レベル")
+    lv = LEVEL_DESC.get(label, LEVEL_DESC["JLPT N3"])
     genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel("gemini-2.0-flash")
 
-    prompt = f"""あなたは日本語教師です。
-以下のニュース記事を参考にして、{level_desc}の例文を10文作成してください。
+    prompt = f"""あなたは日本語能力試験の専門家です。
+以下の参考記事を元に、{lv['desc']}の例文を正確に10文作成してください。
 
-【条件】
-・各文は必ず「。」で終わる完全な文にすること
-・ルビ（ふりがな）は絶対につけないこと
-・番号・記号・説明文は不要。例文だけを1行1文で出力
-・元記事のトピック・テーマに沿った内容にすること
+【レベル要件 — 厳守】
+・語彙: {lv['vocab']}
+・話題: {lv['topic']}
+・文法: {lv['grammar']}
+・参考例文: {lv['example']}
 
-【参考記事】
-{sanitize_text(raw_text)[:1000]}"""
+【出力形式 — 厳守】
+・1行につき1文のみ
+・各文は必ず「。」「！」「？」のいずれかで終わること
+・途中で切れた不完全な文は絶対に出力しないこと
+・番号・記号・ふりがな・説明文は一切不要
+・必ず10文出力すること
+
+【参考記事（話題の参考のみ。語彙・難易度は上記レベルに合わせること）】
+{sanitize_text(raw_text)[:800]}"""
 
     try:
         response = model.generate_content(prompt)
-        lines = [l.strip() for l in response.text.strip().split("\n") if l.strip()]
-        sentences = [l for l in lines if is_japanese(l) and l.endswith("。")]
+        raw_lines = [l.strip() for l in response.text.strip().split("\n") if l.strip()]
+        sentences = []
+        for line in raw_lines:
+            line = re.sub(r"^[\d\.\-・\*\s]+", "", line).strip()
+            if is_japanese(line) and line and line[-1] in "。！？" and len(line) >= 15:
+                sentences.append(line)
+        print(f"Gemini generated {len(sentences)} valid sentences.")
         return sentences[:10]
     except Exception as e:
         print(f"Gemini rewrite failed: {e}")
