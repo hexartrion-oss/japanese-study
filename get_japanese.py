@@ -418,12 +418,12 @@ def validate_sentences(sentences: list, label: str) -> list:
     # 4. 길이 미달 제거
     valid = [s for s in cleaned if len(s) >= 10]
 
-    # 5. 10문장 미만이면 실패
+    # 5. 10문장 미만이면 실패 (20문 요청 기준 병합 후 10개 미달 시 재시도)
     if len(valid) < 10:
-        print(f"[경고] 문장 수 부족: {len(valid)}개 (10개 필요)")
+        print(f"[경고] 문장 수 부족: {len(valid)}개 (10개 필요 — 재시도)")
         return []
 
-    return valid[:10]
+    return valid  # 10개 이상이면 전부 통과
 
 
 # ── N3/N4: 주제 풀에서 랜덤 선택 ─────────────────────
@@ -556,7 +556,7 @@ def write_story_with_gemini(theme: str, label: str, attempt: int = 0) -> list:
 【出力ルール — 全て絶対厳守】
 1. 文章のみを出力する（タイトル・ヘッダー・番号・説明・コメント禁止）
 2. マークダウン記号（**、##など）は一切使用しない
-3. 10文ちょうど出力する（少なくても多くても禁止）
+3. 20文出力する（少なくても多くても禁止）
 4. 1行に1文のみ、改行で区切る
 5. 各文は必ず「。」で終わること
 6. 文が途中で切れることは絶対禁止
