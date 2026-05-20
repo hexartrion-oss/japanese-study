@@ -454,7 +454,7 @@ def write_story_with_gemini(theme: str, label: str, attempt: int = 0) -> list:
 
 今すぐ10文の読み物を書いてください："""
 
-    raw = _call_gemini(prompt, temperature=0.1, max_tokens=1024)
+    raw = _call_gemini(prompt, temperature=0.1, max_tokens=2048)
     if not raw:
         return []
 
