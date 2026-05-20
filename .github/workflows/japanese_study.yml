@@ -34,8 +34,70 @@ jobs:
         run: pip install requests beautifulsoup4 fpdf2 python-dotenv lxml google-genai
 
       - name: 스크립트 실행
+        id: run_script
         env:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python get_japanese.py
+
+      - name: 결과 알림 이메일 발송
+        if: always()
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          JOB_STATUS: ${{ job.status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          python - <<'PYEOF'
+          import os, smtplib, datetime
+          from email.mime.text import MIMEText
+          from email.mime.multipart import MIMEMultipart
+
+          gmail  = os.environ["GMAIL_ADDRESS"]
+          pw     = os.environ["GMAIL_APP_PASSWORD"]
+          status = os.environ.get("JOB_STATUS", "unknown")
+          url    = os.environ.get("RUN_URL", "")
+          run_no = os.environ.get("RUN_NUMBER", "?")
+
+          now_kst  = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+          date_str = now_kst.strftime("%Y-%m-%d %H:%M KST")
+
+          is_ok      = (status == "success")
+          icon       = "성공" if is_ok else "실패"
+          result_msg = "PDF가 생성되어 이메일로 발송되었습니다." if is_ok else "실행 중 오류가 발생했습니다. 아래 링크에서 상세 로그를 확인해주세요."
+
+          subject = "[일본어 학습] " + icon + " - " + date_str
+
+          body = "\n".join([
+              "안녕하세요!",
+              "",
+              "오늘의 일본어 학습 자동화 결과입니다.",
+              "",
+              "  실행 일시 : " + date_str,
+              "  실행 번호 : #" + run_no,
+              "  결과      : " + icon,
+              "",
+              result_msg,
+              "",
+              "상세 로그 확인:",
+              url,
+              "",
+              "---",
+              "이 메일은 GitHub Actions에서 자동 발송됩니다.",
+          ])
+
+          msg = MIMEMultipart()
+          msg["From"]    = gmail
+          msg["To"]      = "kwonyh000@naver.com"
+          msg["Subject"] = subject
+          msg.attach(MIMEText(body, "plain", "utf-8"))
+
+          with smtplib.SMTP("smtp.gmail.com", 587) as server:
+              server.starttls()
+              server.login(gmail, pw)
+              server.send_message(msg)
+
+          print("알림 이메일 발송 완료 -> kwonyh000@naver.com (" + status + ")")
+          PYEOF
