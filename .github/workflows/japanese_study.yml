@@ -4,7 +4,11 @@ on:
   schedule:
     # 월~금 오전 8시 KST = 일~목 23:00 UTC
     - cron: '0 23 * * 0,1,2,3,4'
-  workflow_dispatch:   # 수동 실행 (테스트용)
+  workflow_dispatch: # 수동 실행 (테스트용)
+
+# Node.js 24 강제 적용 (2026-06-02 이후 필수)
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   send-japanese:
