@@ -306,7 +306,61 @@ def _sentence_ends_properly(s: str) -> bool:
     return False
 
 
+def _merge_split_lines(lines: list) -> list:
+    """
+    Gemini가 하나의 문장을 줄바꿈으로 쪼갠 경우 병합 복구.
+
+    케이스 1 — 대화체 분리:
+      「〜だよ」         ← 닫는 따옴표로만 끝남
+      と彼は言った。     ← 다음 줄이 と/が/を 등 조사/접속사로 시작
+      → 두 줄을 하나로 합침
+
+    케이스 2 — 중간 토큰 잘림:
+      特に海外からの高価な  ← 불완전하고 다음 줄이 이어지는 내용
+      試薬の調達が難しくなっている。
+      → 두 줄을 하나로 합침
+    """
+    # 다음 줄이 이 문자로 시작하면 앞 줄의 연속으로 판단
+    _CONTINUATION_START = re.compile(
+        r"^(と|が|を|に|で|は|も|か|な|の|より|から|まで|として|について|によって|において)"
+    )
+
+    merged = []
+    i = 0
+    while i < len(lines):
+        current = lines[i]
+        # 현재 줄이 불완전하고 다음 줄이 존재하면
+        if not _sentence_ends_properly(current) and i + 1 < len(lines):
+            next_line = lines[i + 1]
+            # 케이스 1: 현재가 닫는 따옴표로 끝나고 다음이 조사로 시작
+            # 케이스 2: 단순 잘림 — 다음 줄과 합쳐서 완성 여부 확인
+            combined = current + next_line
+            if _sentence_ends_properly(combined) or _continuation_needed(current, next_line):
+                print(f"[병합 복구] '{current[:30]}...' + '{next_line[:30]}...'")
+                merged.append(combined)
+                i += 2
+                continue
+        merged.append(current)
+        i += 1
+    return merged
+
+
+def _continuation_needed(current: str, next_line: str) -> bool:
+    """현재 줄이 불완전하고 다음 줄이 연속 내용일 가능성 판단."""
+    _CONTINUATION_START = re.compile(
+        r"^(と|が|を|に|で|は|も|か|な|の|より|から|まで|として|について|によって|において)"
+    )
+    # 다음 줄이 조사/접속사로 시작하면 연속으로 판단
+    if _CONTINUATION_START.match(next_line):
+        return True
+    # 현재 줄이 닫는 따옴표로 끝나는 경우
+    if current and current[-1] in _CLOSING_QUOTES:
+        return True
+    return False
+
+
 def validate_sentences(sentences: list, label: str) -> list:
+    # 1. 기본 정제
     cleaned = []
     for line in sentences:
         line = sanitize_text(line.strip())
@@ -315,10 +369,14 @@ def validate_sentences(sentences: list, label: str) -> list:
             continue
         cleaned.append(line)
 
+    # 2. 줄 병합 복구 시도 (대화체 분리, 토큰 잘림 등)
+    cleaned = _merge_split_lines(cleaned)
+
+    # 3. 불완전 문장 검사 — 복구 후에도 남아있으면 경고 출력 후 실패
     incomplete = [s for s in cleaned if s and not _sentence_ends_properly(s)]
     if incomplete:
         print("\n" + "=" * 60)
-        print(f"[경고] 불완전 문장 발견")
+        print(f"[경고] 복구 후에도 불완전 문장 존재")
         print(f"레벨: {label}")
         print("=" * 60)
         for i, s in enumerate(cleaned, 1):
@@ -327,9 +385,10 @@ def validate_sentences(sentences: list, label: str) -> list:
         print("=" * 60)
         return []
 
+    # 4. 길이 미달 제거
     valid = [s for s in cleaned if len(s) >= 10]
 
-    # 10문장 미만이면 실패로 처리
+    # 5. 10문장 미만이면 실패
     if len(valid) < 10:
         print(f"[경고] 문장 수 부족: {len(valid)}개 (10개 필요)")
         return []
