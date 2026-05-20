@@ -27,20 +27,21 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 # ── 환경변수 ───────────────────────────────────────────
-GMAIL_ADDRESS  = os.environ.get("GMAIL_ADDRESS")
-GMAIL_APP_PW   = os.environ.get("GMAIL_APP_PASSWORD")
+GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS")
+GMAIL_APP_PW = os.environ.get("GMAIL_APP_PASSWORD")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 try:
     from dotenv import load_dotenv
     load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
-    GMAIL_ADDRESS  = GMAIL_ADDRESS  or os.getenv("GMAIL_ADDRESS")
-    GMAIL_APP_PW   = GMAIL_APP_PW   or os.getenv("GMAIL_APP_PASSWORD")
+    GMAIL_ADDRESS = GMAIL_ADDRESS or os.getenv("GMAIL_ADDRESS")
+    GMAIL_APP_PW = GMAIL_APP_PW or os.getenv("GMAIL_APP_PASSWORD")
     GEMINI_API_KEY = GEMINI_API_KEY or os.getenv("GEMINI_API_KEY")
 except ImportError:
     pass
 
 OUTPUT_PDF = os.path.join(os.path.dirname(__file__), "JPN.pdf")
+
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Accept-Language": "ja,en;q=0.9",
@@ -65,7 +66,7 @@ _BLOCK_KEYWORDS = [
 ]
 
 # ── 레벨 정의 ─────────────────────────────────────────
-JPT_PLAN  = ["JPT 300", "JPT 400", "JPT 500", "JPT 600", "JPT 700", "JPT 800", "JPT 900"]
+JPT_PLAN = ["JPT 300", "JPT 400", "JPT 500", "JPT 600", "JPT 700", "JPT 800", "JPT 900"]
 JLPT_PLAN = ["JLPT N4", "JLPT N3", "JLPT N2", "JLPT N1", "JLPT N0"]
 
 # N2 이상은 RSS 사용, N3/N4는 주제 풀 사용
@@ -138,6 +139,7 @@ LEVEL_DESC = {
         ),
     },
 }
+
 LEVEL_DESC["JPT 300"] = {**LEVEL_DESC["JLPT N4"], "desc": "JPT 300点（JLPT N4相当・基礎）"}
 LEVEL_DESC["JPT 400"] = {**LEVEL_DESC["JLPT N4"], "desc": "JPT 400点（JLPT N4上位相当）"}
 LEVEL_DESC["JPT 500"] = {**LEVEL_DESC["JLPT N3"], "desc": "JPT 500点（JLPT N3相当）"}
@@ -222,12 +224,11 @@ def _get_topic_pool(label: str) -> list:
         return _TOPIC_POOL["N4"]
     return _TOPIC_POOL["N3"]  # JLPT N3, JPT 500
 
-
 # ── Gemini API 공통 호출 ──────────────────────────────
 _GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite"]
 
 def _call_gemini(prompt: str, temperature: float = 0.1, max_tokens: int = 1024) -> str:
-    """quota 오류 시 대기 후 재시도, 모델 폴백 포함."""
+    """quota/503 오류 시 대기 후 재시도, 모델 폴백 포함."""
     if not GEMINI_AVAILABLE or not GEMINI_API_KEY:
         return ""
     client = google_genai.Client(api_key=GEMINI_API_KEY)
@@ -257,11 +258,20 @@ def _call_gemini(prompt: str, temperature: float = 0.1, max_tokens: int = 1024) 
                     print(f"[Gemini] {model_id} 재시도 실패 → 10초 후 다음 모델로 전환")
                     time.sleep(10)
                     break
+                # ✅ 503 서버 과부하 처리 추가
+                is_unavailable = "503" in err or "UNAVAILABLE" in err
+                if is_unavailable and attempt == 0:
+                    print(f"[Gemini] {model_id} 서버 과부하(503). 30초 대기 후 재시도...")
+                    time.sleep(30)
+                    continue
+                if is_unavailable:
+                    print(f"[Gemini] {model_id} 503 재시도 실패 → 다음 모델로 전환")
+                    time.sleep(10)
+                    break
                 print(f"[Gemini] API 오류: {e}")
                 return ""
     print("[Gemini] 모든 모델 실패")
     return ""
-
 
 # ── 폰트 탐색 ─────────────────────────────────────────
 def find_font() -> str:
@@ -301,28 +311,23 @@ def find_font() -> str:
         "Japanese font not found. Set JAPANESE_FONT_PATH env var to a .ttf file path."
     )
 
-
 # ── 유틸 ──────────────────────────────────────────────
 def is_japanese(text: str) -> bool:
     return bool(re.search(r"[ぁ-んァ-ン一-鿿]", text))
-
 
 def sanitize_text(text: str) -> str:
     text = "".join(c for c in text if ord(c) <= 0xFFFF)
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
-
 def get_week_of_month(dt: datetime.date) -> int:
     return (dt.day + dt.replace(day=1).weekday() - 1) // 7 + 1
-
 
 def has_block_keyword(text: str) -> bool:
     """Gemini 안전필터 차단 가능성 높은 키워드 포함 여부."""
     return any(kw in text for kw in _BLOCK_KEYWORDS)
 
-
 # ── 문장 완성도 검증 ──────────────────────────────────
-_SENTENCE_END   = set("。！？")
+_SENTENCE_END = set("。！？")
 _CLOSING_QUOTES = set("」』）")
 
 def _sentence_ends_properly(s: str) -> bool:
@@ -335,22 +340,18 @@ def _sentence_ends_properly(s: str) -> bool:
         return True
     return False
 
-
 def _merge_split_lines(lines: list) -> list:
     """
     Gemini가 하나의 문장을 줄바꿈으로 쪼갠 경우 병합 복구.
-
     케이스 1 — 대화체 분리:
-      「〜だよ」         ← 닫는 따옴표로만 끝남
-      と彼は言った。     ← 다음 줄이 と/が/を 등 조사/접속사로 시작
-      → 두 줄을 하나로 합침
-
+        「〜だよ」 ← 닫는 따옴표로만 끝남
+        と彼は言った。 ← 다음 줄이 と/が/を 등 조사/접속사로 시작
+        → 두 줄을 하나로 합침
     케이스 2 — 중간 토큰 잘림:
-      特に海外からの高価な  ← 불완전하고 다음 줄이 이어지는 내용
-      試薬の調達が難しくなっている。
-      → 두 줄을 하나로 합침
+        特に海外からの高価な ← 불완전하고 다음 줄이 이어지는 내용
+        試薬の調達が難しくなっている。
+        → 두 줄을 하나로 합침
     """
-    # 다음 줄이 이 문자로 시작하면 앞 줄의 연속으로 판단
     _CONTINUATION_START = re.compile(
         r"^(と|が|を|に|で|は|も|か|な|の|より|から|まで|として|について|によって|において)"
     )
@@ -359,11 +360,8 @@ def _merge_split_lines(lines: list) -> list:
     i = 0
     while i < len(lines):
         current = lines[i]
-        # 현재 줄이 불완전하고 다음 줄이 존재하면
         if not _sentence_ends_properly(current) and i + 1 < len(lines):
             next_line = lines[i + 1]
-            # 케이스 1: 현재가 닫는 따옴표로 끝나고 다음이 조사로 시작
-            # 케이스 2: 단순 잘림 — 다음 줄과 합쳐서 완성 여부 확인
             combined = current + next_line
             if _sentence_ends_properly(combined) or _continuation_needed(current, next_line):
                 print(f"[병합 복구] '{current[:30]}...' + '{next_line[:30]}...'")
@@ -374,20 +372,16 @@ def _merge_split_lines(lines: list) -> list:
         i += 1
     return merged
 
-
 def _continuation_needed(current: str, next_line: str) -> bool:
     """현재 줄이 불완전하고 다음 줄이 연속 내용일 가능성 판단."""
     _CONTINUATION_START = re.compile(
         r"^(と|が|を|に|で|は|も|か|な|の|より|から|まで|として|について|によって|において)"
     )
-    # 다음 줄이 조사/접속사로 시작하면 연속으로 판단
     if _CONTINUATION_START.match(next_line):
         return True
-    # 현재 줄이 닫는 따옴표로 끝나는 경우
     if current and current[-1] in _CLOSING_QUOTES:
         return True
     return False
-
 
 def validate_sentences(sentences: list, label: str) -> list:
     # 1. 기본 정제
@@ -418,13 +412,12 @@ def validate_sentences(sentences: list, label: str) -> list:
     # 4. 길이 미달 제거
     valid = [s for s in cleaned if len(s) >= 10]
 
-    # 5. 10문장 미만이면 실패 (20문 요청 기준 병합 후 10개 미달 시 재시도)
+    # 5. 10문장 미만이면 실패
     if len(valid) < 10:
         print(f"[경고] 문장 수 부족: {len(valid)}개 (10개 필요 — 재시도)")
         return []
 
-    return valid  # 10개 이상이면 전부 통과
-
+    return valid
 
 # ── N3/N4: 주제 풀에서 랜덤 선택 ─────────────────────
 def pick_topic(label: str) -> tuple:
@@ -433,7 +426,6 @@ def pick_topic(label: str) -> tuple:
     topic = random.choice(pool)
     print(f"[주제 풀] 선택된 주제: {topic}")
     return topic, ""
-
 
 # ── N2 이상: NHK RSS 크롤링 ──────────────────────────
 def crawl_titles(count: int = 10) -> list:
@@ -447,7 +439,7 @@ def crawl_titles(count: int = 10) -> list:
         try:
             r = requests.get(rss_url, headers=HEADERS, timeout=15)
             r.raise_for_status()
-            soup  = BeautifulSoup(r.text, "xml")
+            soup = BeautifulSoup(r.text, "xml")
             items = soup.find_all("item")
             random.shuffle(items)
             for item in items:
@@ -456,10 +448,9 @@ def crawl_titles(count: int = 10) -> list:
                 if not t or not l:
                     continue
                 title = t.text.strip()
-                url   = l.text.strip()
+                url = l.text.strip()
                 if not is_japanese(title):
                     continue
-                # 차단 키워드 포함 제목 미리 제거
                 if has_block_keyword(title):
                     print(f"[RSS 필터] 차단 키워드 포함 제목 제외: {title}")
                     continue
@@ -471,7 +462,6 @@ def crawl_titles(count: int = 10) -> list:
     print(f"RSS 수집 완료: {len(collected)}개")
     return collected
 
-
 def select_title_with_gemini(title_pairs: list, label: str) -> tuple:
     """수집된 제목 중 레벨에 맞는 제목 1개를 Gemini가 선택."""
     if len(title_pairs) == 1:
@@ -481,7 +471,6 @@ def select_title_with_gemini(title_pairs: list, label: str) -> tuple:
 
     lv = LEVEL_DESC.get(label, LEVEL_DESC["JLPT N2"])
     title_list = "\n".join(f"{i+1}. {t}" for i, (t, _) in enumerate(title_pairs))
-
     prompt = f"""あなたはJLPT・JPT専門の日本語教師です。
 
 【今日のレベル】{lv['desc']}
@@ -504,9 +493,7 @@ def select_title_with_gemini(title_pairs: list, label: str) -> tuple:
             selected = title_pairs[idx]
             print(f"Gemini selected title #{idx+1}: {selected[0]}")
             return selected
-
     return title_pairs[0] if title_pairs else ("今日のニュース", "")
-
 
 # ── 문장 생성 ─────────────────────────────────────────
 def write_story_with_gemini(theme: str, label: str, attempt: int = 0) -> list:
@@ -516,9 +503,6 @@ def write_story_with_gemini(theme: str, label: str, attempt: int = 0) -> list:
         return []
 
     lv = LEVEL_DESC.get(label, LEVEL_DESC["JLPT N3"])
-
-    # N4/JPT300/JPT400: 일상 에세이·일기 스타일
-    # N3 이상: 기사·기고문·설명문 등 공표 문서 형식
     is_beginner = label in {"JLPT N4", "JPT 300", "JPT 400"}
 
     if is_beginner:
@@ -570,10 +554,8 @@ def write_story_with_gemini(theme: str, label: str, attempt: int = 0) -> list:
 
     raw = re.sub(r"\*+", "", raw)
     raw = re.sub(r"^#+\s*", "", raw, flags=re.MULTILINE)
-
     lines_by_newline = [l.strip() for l in raw.split("\n") if l.strip()]
 
-    # Gemini가 여러 문장을 한 줄로 이어 쓴 경우 복구
     recovered = []
     for line in lines_by_newline:
         parts = re.split(r"(?<=[。！？」』])", line)
@@ -587,23 +569,21 @@ def write_story_with_gemini(theme: str, label: str, attempt: int = 0) -> list:
     print(f"Gemini raw output (attempt {attempt + 1}, {len(raw_lines)} lines):")
     for i, l in enumerate(raw_lines, 1):
         print(f"  {i}. {l[:80]}")
-    return raw_lines
 
+    return raw_lines
 
 # ── 메인 흐름 ─────────────────────────────────────────
 def fetch_study_lines(label: str) -> tuple:
     """
     N3/N4: 주제 풀 → 바로 문장 생성
     N2 이상: NHK RSS → 제목 선택 → 문장 생성
-             Gemini 안전필터 차단 시 → 다른 제목으로 재시도
+    Gemini 503/안전필터 차단 시 → 다른 주제로 재시도
     """
     use_rss = label in RSS_LEVELS
 
     if use_rss:
-        # N2 이상: RSS 크롤링
         title_pairs = crawl_titles(count=10)
         if not title_pairs:
-            # RSS 완전 실패 시 레벨에 맞는 일반 주제로 폴백
             print("[RSS 실패] 폴백 주제 사용")
             fallback = {
                 "JLPT N2": "仕事と社会生活", "JPT 600": "仕事と社会生活",
@@ -617,31 +597,40 @@ def fetch_study_lines(label: str) -> tuple:
         else:
             selected_title, selected_url = select_title_with_gemini(title_pairs, label)
     else:
-        # N3/N4: 주제 풀에서 선택
         selected_title, selected_url = pick_topic(label)
         title_pairs = [(selected_title, selected_url)]
 
     print(f"테마 확정: {selected_title}")
 
-    # 문장 생성 — 최대 3회 시도
-    # N2 이상에서 Gemini 안전필터 차단 시 다른 제목으로 교체
     sentences = []
     tried_titles = {selected_title}
 
     for attempt in range(3):
         raw_lines = write_story_with_gemini(selected_title, label, attempt=attempt)
 
-        # Gemini가 아예 응답 못하면 (quota 등) 즉시 중단
+        # ✅ Gemini 응답 없음(503 등) — 다른 주제로 재시도
         if not raw_lines:
-            print("[중단] Gemini 응답 없음 — 재시도 생략")
-            break
+            print("[중단] Gemini 응답 없음 — 다른 주제로 재시도")
+            if use_rss:
+                pool_key = "N3" if label in {"JLPT N2", "JPT 600", "JPT 700"} else "N4"
+                new_theme = random.choice(_TOPIC_POOL[pool_key])
+            else:
+                new_theme = random.choice(_get_topic_pool(label))
+            while new_theme in tried_titles and len(tried_titles) < 10:
+                new_theme = random.choice(
+                    _TOPIC_POOL["N3"] if use_rss else _get_topic_pool(label)
+                )
+            tried_titles.add(new_theme)
+            selected_title = new_theme
+            selected_url = ""
+            print(f"[재시도 {attempt + 1}/3] 새 주제: {selected_title}")
+            continue
 
         sentences = validate_sentences(raw_lines, label)
         if sentences:
             return selected_title, selected_url, sentences
 
-        # 문장 수 부족 = 안전필터 차단 가능성
-        # N2 이상이고 RSS 제목이 남아있으면 다른 제목으로 교체
+        # 안전필터 차단 의심 — RSS 제목 교체
         if use_rss and len(title_pairs) > 1:
             remaining = [(t, u) for t, u in title_pairs if t not in tried_titles]
             if remaining:
@@ -650,25 +639,23 @@ def fetch_study_lines(label: str) -> tuple:
                 print(f"[안전필터 차단 의심] 새 제목으로 교체: {selected_title}")
                 continue
 
-        # N3/N4 또는 RSS 제목 소진 → 주제 풀에서 새 주제
+        # RSS 소진 또는 N3/N4 → 주제 풀에서 새 주제
         if use_rss:
             pool_key = "N3" if label in {"JLPT N2", "JPT 600", "JPT 700"} else "N4"
             new_theme = random.choice(_TOPIC_POOL[pool_key])
         else:
             new_theme = random.choice(_get_topic_pool(label))
 
-        # 이미 시도한 주제 제외
         while new_theme in tried_titles and len(tried_titles) < 10:
             new_theme = random.choice(
                 _TOPIC_POOL["N3"] if use_rss else _get_topic_pool(label)
             )
         tried_titles.add(new_theme)
         selected_title = new_theme
-        selected_url   = ""
+        selected_url = ""
         print(f"[재시도 {attempt + 1}/3] 새 주제: {selected_title}")
 
     return selected_title, selected_url, sentences
-
 
 # ── PDF 생성 ───────────────────────────────────────────
 def build_pdf(label: str, title: str, url: str,
@@ -685,10 +672,12 @@ def build_pdf(label: str, title: str, url: str,
     pdf.set_font("JP", size=18)
     pdf.cell(0, 12, "日本語学習 読み物",
              new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
+
     pdf.set_font("JP", size=11)
-    pdf.cell(0, 8, f"{date_str}  |  {mode}  {week_label}",
+    pdf.cell(0, 8, f"{date_str} | {mode} {week_label}",
              new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
     pdf.ln(3)
+
     pdf.set_draw_color(160, 160, 160)
     pdf.line(15, pdf.get_y(), 195, pdf.get_y())
     pdf.ln(8)
@@ -713,8 +702,7 @@ def build_pdf(label: str, title: str, url: str,
         pdf.multi_cell(0, 8, line, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
     pdf.output(OUTPUT_PDF)
-    print(f"PDF saved: {OUTPUT_PDF}  ({len(lines)} lines)")
-
+    print(f"PDF saved: {OUTPUT_PDF} ({len(lines)} lines)")
 
 # ── 이메일 전송 ────────────────────────────────────────
 def send_email(date_str: str, label: str, mode: str):
@@ -729,8 +717,8 @@ def send_email(date_str: str, label: str, mode: str):
         return
     try:
         msg = MIMEMultipart()
-        msg["From"]    = GMAIL_ADDRESS
-        msg["To"]      = GMAIL_ADDRESS
+        msg["From"] = GMAIL_ADDRESS
+        msg["To"] = GMAIL_ADDRESS
         msg["Subject"] = f"[Japanese Study] {date_str} — {label}"
         msg.attach(MIMEText(
             f"Today's Japanese study material.\nLevel: {label}\nMode: {mode}",
@@ -751,24 +739,23 @@ def send_email(date_str: str, label: str, mode: str):
     except Exception as e:
         print(f"Email failed: {e}")
 
-
 # ── 메인 ──────────────────────────────────────────────
 def main():
-    today    = datetime.date.today()
+    today = datetime.date.today()
     date_str = today.strftime("%Y-%m-%d (%a)")
     week_num = get_week_of_month(today)
 
     if week_num % 2 == 1:
-        plan       = JPT_PLAN[:]
-        mode       = "JPT"
+        plan = JPT_PLAN[:]
+        mode = "JPT"
         week_label = f"Week {week_num} (JPT)"
     else:
-        plan       = JLPT_PLAN[:]
-        mode       = "JLPT"
+        plan = JLPT_PLAN[:]
+        mode = "JLPT"
         week_label = f"Week {week_num} (JLPT)"
 
     label = random.choice(plan)
-    print(f"Today: {label}  |  {week_label}")
+    print(f"Today: {label} | {week_label}")
 
     title, url, sentences = fetch_study_lines(label)
 
@@ -781,7 +768,6 @@ def main():
     build_pdf(label, title, url, sentences, date_str, week_label, mode)
     send_email(date_str, label, mode)
     print("Done!")
-
 
 if __name__ == "__main__":
     main()
