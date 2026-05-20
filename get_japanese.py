@@ -12,9 +12,9 @@ from email.mime.base import MIMEBase
 from email.mime.text import MIMEText
 from email import encoders
 from fpdf import FPDF
-from fpdf.enums import XPos, YPos
+from fpdf.enums import XPos, YPos  # requires fpdf2 >= 2.7; install: pip install fpdf2
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup  # requires lxml: pip install lxml
 
 try:
     from google import genai as google_genai
@@ -150,12 +150,33 @@ def find_font() -> str:
     env_font = os.environ.get("JAPANESE_FONT_PATH")
     if env_font and os.path.exists(env_font):
         return env_font
-    if platform.system() == "Windows":
-        for f in [r"C:\Windows\Fonts\msgothic.ttc",
-                  r"C:\Windows\Fonts\meiryo.ttc",
-                  r"C:\Windows\Fonts\YuGothR.ttc"]:
+
+    system = platform.system()
+
+    # [FIX] macOS 경로 추가
+    if system == "Darwin":
+        for f in [
+            "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc",
+            "/Library/Fonts/Osaka.ttf",
+            "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        ]:
             if os.path.exists(f):
+                # TTC는 fpdf2에서 직접 사용 불가 — TTF만 반환
+                if f.endswith(".ttf"):
+                    return f
+                print(f"[경고] macOS TTC 폰트 발견: {f} — JAPANESE_FONT_PATH에 .ttf를 지정하세요.")
+
+    if system == "Windows":
+        for f in [
+            r"C:\Windows\Fonts\msgothic.ttc",
+            r"C:\Windows\Fonts\meiryo.ttc",
+            r"C:\Windows\Fonts\YuGothR.ttc",
+        ]:
+            if os.path.exists(f):
+                # [FIX] TTC는 fpdf2에서 인덱스 없이 쓰면 깨질 수 있음 — 경고 출력
+                print(f"[경고] TTC 폰트 사용 중: {f} — 렌더링 문제 발생 시 TTF 변환 필요")
                 return f
+
     for pattern in [
         "/usr/share/fonts/opentype/ipafont-gothic/ipag.ttf",
         "/usr/share/fonts/truetype/ipafont-gothic/ipag.ttf",
@@ -166,7 +187,10 @@ def find_font() -> str:
         hits = glob.glob(pattern, recursive=True)
         if hits:
             return sorted(hits)[0]
-    raise FileNotFoundError("Japanese font not found.")
+
+    raise FileNotFoundError(
+        "Japanese font not found. Set JAPANESE_FONT_PATH env var to a .ttf file path."
+    )
 
 
 # ── 유틸 ──────────────────────────────────────────────
@@ -184,6 +208,23 @@ def get_week_of_month(dt: datetime.date) -> int:
 
 
 # ── 문장 완성도 검증 ──────────────────────────────────
+# [FIX] 일본어 인용 부호(」『』) 처리 추가 — 인용 내 마침표를 포함한 경우 정상 처리
+_SENTENCE_END = set("。！？")
+_CLOSING_QUOTES = set("」』）")
+
+def _sentence_ends_properly(s: str) -> bool:
+    """문장이 。！？ 또는 그 뒤에 닫는 인용부호가 있는 형式을 허용."""
+    if not s:
+        return False
+    last = s[-1]
+    if last in _SENTENCE_END:
+        return True
+    # 「〜です。」처럼 닫는 따옴표 바로 앞이 句読点인 경우 허용
+    if last in _CLOSING_QUOTES and len(s) >= 2 and s[-2] in _SENTENCE_END:
+        return True
+    return False
+
+
 def validate_sentences(sentences: list, label: str) -> list:
     """
     각 문장이 。！？로 끝나는지 확인.
@@ -197,21 +238,20 @@ def validate_sentences(sentences: list, label: str) -> list:
             continue
         cleaned.append(line)
 
-    # 불완전 문장 검사
-    incomplete = [s for s in cleaned if s and s[-1] not in "。！？"]
+    # [FIX] 불완전 문장 검사 — 인용부호 허용 적용
+    incomplete = [s for s in cleaned if s and not _sentence_ends_properly(s)]
     if incomplete:
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print(f"[경고] 불완전 문장 발견 — 이메일 전송 중단")
         print(f"레벨: {label}")
-        print("="*60)
+        print("=" * 60)
         print("[생성된 전체 내용]")
         for i, s in enumerate(cleaned, 1):
-            mark = " ← 불완전" if s[-1] not in "。！？" else ""
+            mark = " ← 불완전" if not _sentence_ends_properly(s) else ""
             print(f"{i:2}. {s}{mark}")
-        print("="*60)
-        return []  # 빈 리스트 반환 → PDF 저장 안 함
+        print("=" * 60)
+        return []
 
-    # 길이 미달 문장 제거 (10자 미만)
     valid = [s for s in cleaned if len(s) >= 10]
     return valid[:10]
 
@@ -243,8 +283,11 @@ def crawl_titles(count: int = 7) -> list:
 def select_title_with_gemini(title_pairs: list, label: str) -> tuple:
     """
     수집된 제목들 중 해당 레벨에 가장 적합한 제목 1개를 Gemini가 선택.
-    레벨에 맞지 않는 단어가 포함된 제목은 건너뜀.
     """
+    # [FIX] 단일 후보면 불필요한 API 호출 없이 바로 반환
+    if len(title_pairs) == 1:
+        return title_pairs[0]
+
     if not GEMINI_AVAILABLE or not GEMINI_API_KEY:
         return random.choice(title_pairs) if title_pairs else ("今日のできごと", "")
 
@@ -290,7 +333,7 @@ _FALLBACK_TOPIC = {
 
 # ── 3단계: Gemini가 소설 창작 ─────────────────────────
 def write_story_with_gemini(news_title: str, label: str, attempt: int = 0) -> list:
-    """선택된 제목을 주제로 Gemini가 지정 레벨 소설(10문장) 창작. 재시도 시 attempt 증가."""
+    """선택된 제목을 주제로 Gemini가 지정 레벨 소설(10문장) 창작."""
     if not GEMINI_AVAILABLE or not GEMINI_API_KEY:
         print("Gemini API not available.")
         return []
@@ -334,7 +377,22 @@ def write_story_with_gemini(news_title: str, label: str, attempt: int = 0) -> li
 
     raw = re.sub(r"\*+", "", raw)
     raw = re.sub(r"^#+\s*", "", raw, flags=re.MULTILINE)
-    raw_lines = [l.strip() for l in raw.split("\n") if l.strip()]
+
+    # [FIX] 줄바꿈 파싱 + 보조 파싱(。！？ 기준 split) 병합
+    lines_by_newline = [l.strip() for l in raw.split("\n") if l.strip()]
+
+    # Gemini가 여러 문장을 한 줄로 이어 쓴 경우를 복구
+    recovered = []
+    for line in lines_by_newline:
+        # 문장 구분자로 split 후 각 조각을 개별 문장으로 추가
+        parts = re.split(r"(?<=[。！？」』])", line)
+        for p in parts:
+            p = p.strip()
+            if p:
+                recovered.append(p)
+
+    raw_lines = recovered if len(recovered) >= len(lines_by_newline) else lines_by_newline
+
     print(f"Gemini raw output (attempt {attempt + 1}, {len(raw_lines)} lines):")
     for i, l in enumerate(raw_lines, 1):
         print(f"  {i}. {l[:80]}")
@@ -349,17 +407,16 @@ def fetch_study_lines(label: str) -> tuple:
     3) Gemini가 소설 창작 (최대 3회 재시도)
     4) 문장 완성도 검증
     """
-    # 1단계: 제목 수집
     title_pairs = crawl_titles(count=7)
     if not title_pairs:
         title_pairs = [("今日のできごと", "")]
     print(f"Collected {len(title_pairs)} titles.")
 
-    # 2단계: 레벨에 맞는 제목 선택
     selected_title, selected_url = select_title_with_gemini(title_pairs, label)
     print(f"Selected: {selected_title}")
 
-    # 3단계 + 4단계: 소설 창작 → 검증 (최대 3회 재시도)
+    # [FIX] 루프 전에 sentences 초기화 — NameError 방지
+    sentences = []
     for attempt in range(3):
         raw_lines = write_story_with_gemini(selected_title, label, attempt=attempt)
         sentences = validate_sentences(raw_lines, label)
@@ -368,7 +425,7 @@ def fetch_study_lines(label: str) -> tuple:
         if attempt < 2:
             print(f"[재시도 {attempt + 1}/3] 문장 검증 실패, 다시 생성합니다...")
 
-    return selected_title, selected_url, []
+    return selected_title, selected_url, sentences  # sentences = [] (3회 전부 실패)
 
 
 # ── PDF 생성 ───────────────────────────────────────────
@@ -425,6 +482,12 @@ def send_email(date_str: str, label: str, mode: str):
     if "입력" in str(GMAIL_APP_PW) or len(str(GMAIL_APP_PW)) < 10:
         print("App password placeholder — skipping email.")
         return
+
+    # [FIX] PDF 파일 존재 여부 확인 — FileNotFoundError 방지
+    if not os.path.exists(OUTPUT_PDF):
+        print(f"[오류] PDF 파일 없음: {OUTPUT_PDF} — 이메일 전송 건너뜀.")
+        return
+
     try:
         msg = MIMEMultipart()
         msg["From"]    = GMAIL_ADDRESS
@@ -470,10 +533,11 @@ def main():
 
     title, url, sentences = fetch_study_lines(label)
 
-    # 불완전 문장 → 전송 중단 (validate_sentences에서 빈 리스트 반환됨)
+    # [FIX] sys.exit(1) → RuntimeError로 교체 — 스케줄러 루프 방지
     if not sentences:
-        print("[중단] 유효한 문장이 없어 PDF/이메일 전송을 건너뜁니다.")
-        sys.exit(1)
+        raise RuntimeError(
+            "[중단] 유효한 문장이 없어 PDF/이메일 전송을 건너뜁니다."
+        )
 
     print(f"Lines validated: {len(sentences)}")
     build_pdf(label, title, url, sentences, date_str, week_label, mode)
