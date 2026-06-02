@@ -2,8 +2,8 @@ name: 일본어 학습 예문 발송
 
 on:
   schedule:
-    # 월~금 오전 8시 KST = 일~목 23:00 UTC
-    - cron: '0 23 * * 0,1,2,3,4'
+        # 월~금 오후 8시 KST = 월~금 11:00 UTC
+        - cron: '0 11 * * 1,2,3,4,5'
   workflow_dispatch: # 수동 실행 (테스트용)
 
 jobs:
