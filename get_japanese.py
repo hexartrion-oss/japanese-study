@@ -258,7 +258,6 @@ def _call_gemini(prompt: str, temperature: float = 0.1, max_tokens: int = 1024) 
                     print(f"[Gemini] {model_id} 재시도 실패 → 10초 후 다음 모델로 전환")
                     time.sleep(10)
                     break
-                # ✅ 503 서버 과부하 처리 추가
                 is_unavailable = "503" in err or "UNAVAILABLE" in err
                 if is_unavailable and attempt == 0:
                     print(f"[Gemini] {model_id} 서버 과부하(503). 30초 대기 후 재시도...")
@@ -341,21 +340,9 @@ def _sentence_ends_properly(s: str) -> bool:
     return False
 
 def _merge_split_lines(lines: list) -> list:
-    """
-    Gemini가 하나의 문장을 줄바꿈으로 쪼갠 경우 병합 복구.
-    케이스 1 — 대화체 분리:
-        「〜だよ」 ← 닫는 따옴표로만 끝남
-        と彼は言った。 ← 다음 줄이 と/が/を 등 조사/접속사로 시작
-        → 두 줄을 하나로 합침
-    케이스 2 — 중간 토큰 잘림:
-        特に海外からの高価な ← 불완전하고 다음 줄이 이어지는 내용
-        試薬の調達が難しくなっている。
-        → 두 줄을 하나로 합침
-    """
     _CONTINUATION_START = re.compile(
         r"^(と|が|を|に|で|は|も|か|な|の|より|から|まで|として|について|によって|において)"
     )
-
     merged = []
     i = 0
     while i < len(lines):
@@ -373,7 +360,6 @@ def _merge_split_lines(lines: list) -> list:
     return merged
 
 def _continuation_needed(current: str, next_line: str) -> bool:
-    """현재 줄이 불완전하고 다음 줄이 연속 내용일 가능성 판단."""
     _CONTINUATION_START = re.compile(
         r"^(と|が|を|に|で|は|も|か|な|の|より|から|まで|として|について|によって|において)"
     )
@@ -384,7 +370,6 @@ def _continuation_needed(current: str, next_line: str) -> bool:
     return False
 
 def validate_sentences(sentences: list, label: str) -> list:
-    # 1. 기본 정제
     cleaned = []
     for line in sentences:
         line = sanitize_text(line.strip())
@@ -393,10 +378,8 @@ def validate_sentences(sentences: list, label: str) -> list:
             continue
         cleaned.append(line)
 
-    # 2. 줄 병합 복구 시도 (대화체 분리, 토큰 잘림 등)
     cleaned = _merge_split_lines(cleaned)
 
-    # 3. 불완전 문장 검사 — 복구 후에도 남아있으면 경고 출력 후 실패
     incomplete = [s for s in cleaned if s and not _sentence_ends_properly(s)]
     if incomplete:
         print("\n" + "=" * 60)
@@ -409,10 +392,8 @@ def validate_sentences(sentences: list, label: str) -> list:
         print("=" * 60)
         return []
 
-    # 4. 길이 미달 제거
     valid = [s for s in cleaned if len(s) >= 10]
 
-    # 5. 10문장 미만이면 실패
     if len(valid) < 10:
         print(f"[경고] 문장 수 부족: {len(valid)}개 (10개 필요 — 재시도)")
         return []
@@ -490,7 +471,7 @@ def select_title_with_gemini(title_pairs: list, label: str) -> tuple:
     if match:
         idx = int(match.group()) - 1
         if 0 <= idx < len(title_pairs):
-  ・感情描写や登場人物の心理描写は禁止"""          selected = title_pairs[idx]
+            selected = title_pairs[idx]
             print(f"Gemini selected title #{idx+1}: {selected[0]}")
             return selected
     return title_pairs[0] if title_pairs else ("今日のニュース", "")
@@ -503,7 +484,7 @@ def write_story_with_gemini(theme: str, label: str, attempt: int = 0) -> list:
         return []
 
     lv = LEVEL_DESC.get(label, LEVEL_DESC["JLPT N3"])
-        is_advanced = label in {"JLPT N0", "JPT 900"}
+    is_advanced = label in {"JLPT N0", "JPT 900"}
     is_beginner = label in {"JLPT N4", "JPT 300", "JPT 400"}
 
     if is_beginner:
@@ -519,12 +500,12 @@ def write_story_with_gemini(theme: str, label: str, attempt: int = 0) -> list:
 ・会話文（「〜」と言った／と述べた）は一切使わない
 ・だ・である調（〜である・〜だ・〜している）で統一する
 ・客観的な視点で事実・現状・背景を説明する論述文にすること
-        if is_advanced:
-                    style_instruction += """
-                    ・難解な古典語・文語体・日常では使わない専門語は使わないこと
-                    ・代わりに尊敬語（「お〜になる」「いらっしゃる」等）・謙譲語（「いたします」「ご「拝見する」等）・丁寧語を自然に取り入れること
-                    ・ビジネス・公式場面で実際に使われる敖語表現を中心に構成すること"""
 ・感情描写や登場人物の心理描写は禁止"""
+        if is_advanced:
+            style_instruction += """
+・難解な古典語・文語体・日常では使わない専門語は使わないこと
+・代わりに尊敬語（「お〜になる」「いらっしゃる」等）・謙譲語（「いたします」「拝見する」等）・丁寧語を自然に取り入れること
+・ビジネス・公式場面で実際に使われる敬語表現を中心に構成すること"""
         scene_instruction = "に関する解説記事・寄稿文"
 
     prompt = f"""あなたは日本語教師です。今から{lv['desc']}レベルの学習者向けに読み物を書きます。
@@ -614,7 +595,6 @@ def fetch_study_lines(label: str) -> tuple:
     for attempt in range(3):
         raw_lines = write_story_with_gemini(selected_title, label, attempt=attempt)
 
-        # ✅ Gemini 응답 없음(503 등) — 다른 주제로 재시도
         if not raw_lines:
             print("[중단] Gemini 응답 없음 — 다른 주제로 재시도")
             if use_rss:
@@ -636,7 +616,6 @@ def fetch_study_lines(label: str) -> tuple:
         if sentences:
             return selected_title, selected_url, sentences
 
-        # 안전필터 차단 의심 — RSS 제목 교체
         if use_rss and len(title_pairs) > 1:
             remaining = [(t, u) for t, u in title_pairs if t not in tried_titles]
             if remaining:
@@ -645,7 +624,6 @@ def fetch_study_lines(label: str) -> tuple:
                 print(f"[안전필터 차단 의심] 새 제목으로 교체: {selected_title}")
                 continue
 
-        # RSS 소진 또는 N3/N4 → 주제 풀에서 새 주제
         if use_rss:
             pool_key = "N3" if label in {"JLPT N2", "JPT 600", "JPT 700"} else "N4"
             new_theme = random.choice(_TOPIC_POOL[pool_key])
