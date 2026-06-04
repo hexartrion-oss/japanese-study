@@ -490,7 +490,7 @@ def select_title_with_gemini(title_pairs: list, label: str) -> tuple:
     if match:
         idx = int(match.group()) - 1
         if 0 <= idx < len(title_pairs):
-            selected = title_pairs[idx]
+  ・感情描写や登場人物の心理描写は禁止"""          selected = title_pairs[idx]
             print(f"Gemini selected title #{idx+1}: {selected[0]}")
             return selected
     return title_pairs[0] if title_pairs else ("今日のニュース", "")
@@ -503,6 +503,7 @@ def write_story_with_gemini(theme: str, label: str, attempt: int = 0) -> list:
         return []
 
     lv = LEVEL_DESC.get(label, LEVEL_DESC["JLPT N3"])
+        is_advanced = label in {"JLPT N0", "JPT 900"}
     is_beginner = label in {"JLPT N4", "JPT 300", "JPT 400"}
 
     if is_beginner:
@@ -518,6 +519,11 @@ def write_story_with_gemini(theme: str, label: str, attempt: int = 0) -> list:
 ・会話文（「〜」と言った／と述べた）は一切使わない
 ・だ・である調（〜である・〜だ・〜している）で統一する
 ・客観的な視点で事実・現状・背景を説明する論述文にすること
+        if is_advanced:
+                    style_instruction += """
+                    ・難解な古典語・文語体・日常では使わない専門語は使わないこと
+                    ・代わりに尊敬語（「お〜になる」「いらっしゃる」等）・謙譲語（「いたします」「ご「拝見する」等）・丁寧語を自然に取り入れること
+                    ・ビジネス・公式場面で実際に使われる敖語表現を中心に構成すること"""
 ・感情描写や登場人物の心理描写は禁止"""
         scene_instruction = "に関する解説記事・寄稿文"
 
