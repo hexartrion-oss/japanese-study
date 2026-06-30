@@ -415,14 +415,16 @@ def validate_sentences(sentences: list, label: str) -> list:
     incomplete = [s for s in cleaned if s and not _sentence_ends_properly(s)]
     if incomplete:
         print("\n" + "=" * 60)
-        print(f"[경고] 복구 후에도 불완전 문장 존재")
+        print(f"[경고] 불완전 문장 {len(incomplete)}개 발견 — 유효 문장만 유지")
         print(f"레벨: {label}")
         print("=" * 60)
         for i, s in enumerate(cleaned, 1):
             mark = " ← 불완전" if not _sentence_ends_properly(s) else ""
             print(f"{i:2}. {s}{mark}")
         print("=" * 60)
-        return []
+        cleaned = [s for s in cleaned if _sentence_ends_properly(s)]
+        if not cleaned:
+            return []
 
     valid = [s for s in cleaned if len(s) >= 10]
 
@@ -601,6 +603,10 @@ def write_story_with_gemini(theme: str, label: str, attempt: int = 0) -> list:
                 recovered.append(p)
 
     raw_lines = recovered if len(recovered) >= len(lines_by_newline) else lines_by_newline
+
+    if len(raw_lines) < 8:
+        print(f"[경고] Gemini 응답 줄수 부족 ({len(raw_lines)}줄) — 절단 응답 → 재시도")
+        return []
 
     print(f"Gemini raw output (attempt {attempt + 1}, {len(raw_lines)} lines):")
     for i, l in enumerate(raw_lines, 1):
