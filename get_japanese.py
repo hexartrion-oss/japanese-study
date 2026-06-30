@@ -537,7 +537,7 @@ def write_story_with_gemini(theme: str, label: str, attempt: int = 0) -> list:
   　　 丁寧語（「〜でございます」「〜ております」等）を自然に組み合わせて使うこと
   　→ ビジネスメール・報告書・依頼文・議事録など実際の実務場面で使われる表現を中心にすること
 ・テーマが社会問題・科学技術・政策など解説・論述的な場面の場合：
-  　→ だ・である調（〜である・〜だ・〜している）で統一する
+  　→ である調（〜である・〜している・〜となっている）で統一する
   　→ 客観的な視点で事実・現状・背景を説明する論述文にすること
 ・いずれの場合も：
   　→ 難解な四字熟語・文語体・古典語・日常では使わない専門語は使わない
@@ -550,7 +550,7 @@ def write_story_with_gemini(theme: str, label: str, attempt: int = 0) -> list:
         style_instruction = """【文体】
 ・新聞記事・解説記事・寄稿文など、外部に公表する文書形式で書く
 ・会話文（「〜」と言った／と述べた）は一切使わない
-・だ・である調（〜である・〜だ・〜している）で統一する
+・である調（〜である・〜している・〜となっている）で統一する
 ・客観的な視点で事実・現状・背景を説明する論述文にすること
 ・感情描写や登場人物の心理描写は禁止"""
         scene_instruction = "に関する解説記事・寄稿文"
@@ -616,6 +616,15 @@ def fetch_study_lines(label: str) -> tuple:
     Gemini 503/안전필터 차단 시 → 다른 주제로 재시도
     """
     use_rss = label in RSS_LEVELS
+
+    # KEIGO_LEVELS(N1/N0/JPT800/JPT900): 50% 확률로 비즈니스 주제 강제 → 경어 발동 보장
+    if label in KEIGO_LEVELS and random.random() < 0.5:
+        selected_title, selected_url = pick_topic(label)
+        title_pairs = [(selected_title, selected_url)]
+        print(f"[경어 모드] 비즈니스 주제 강제 선택: {selected_title}")
+        use_rss = False
+    elif use_rss:
+        pass  # 아래 RSS 블록에서 처리
 
     if use_rss:
         title_pairs = crawl_titles(count=10)
