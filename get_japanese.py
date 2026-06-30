@@ -226,6 +226,7 @@ _TOPIC_POOL = {
     ],
     # N1 / N0 / JPT 800 / JPT 900 — 비즈니스 주제 포함 (경어체 발동)
     "N1": [
+        # 기존 비즈니스 전략·조직 주제
         "取引先へのメール対応",
         "会議の議事録作成",
         "プロジェクト進捗報告",
@@ -241,6 +242,22 @@ _TOPIC_POOL = {
         "リモートワークの課題と対策",
         "M&Aによる事業拡大",
         "ESG投資と企業価値",
+        # BJT 빈출 — 경어·대인 커뮤니케이션
+        "クレーム対応と顧客への謝罪",
+        "商談における価格交渉",
+        "電話応対と取り次ぎの敬語表現",
+        "上司への報告・連絡・相談",
+        "社内会議の進行と発言",
+        "採用面接の実施と評価",
+        "顧客訪問とアポイントメントの調整",
+        "見積書・請求書の確認と交渉",
+        "契約書の読み合わせと締結",
+        "社外向けプレゼンテーションの準備",
+        "部下への業務指示と進捗確認",
+        "社内コンプライアンス研修の実施",
+        "危機管理とリスク対応の報告",
+        "異文化ビジネスマナーと接待",
+        "退職・異動の挨拶と引き継ぎ",
     ],
 }
 
@@ -623,11 +640,14 @@ def fetch_study_lines(label: str) -> tuple:
     """
     use_rss = label in RSS_LEVELS
 
-    # KEIGO_LEVELS(N1/N0/JPT800/JPT900): 50% 확률로 비즈니스 주제 강제 → 경어 발동 보장
-    if label in KEIGO_LEVELS and random.random() < 0.5:
+    # KEIGO_LEVELS: 비즈니스 주제 강제 → 경어 발동 보장
+    # JLPT N1/N0: 75% (BJT 대응 강화), JPT 800/900: 50%
+    _bjt_levels = {"JLPT N1", "JLPT N0"}
+    _keigo_threshold = 0.75 if label in _bjt_levels else 0.5
+    if label in KEIGO_LEVELS and random.random() < _keigo_threshold:
         selected_title, selected_url = pick_topic(label)
         title_pairs = [(selected_title, selected_url)]
-        print(f"[경어 모드] 비즈니스 주제 강제 선택: {selected_title}")
+        print(f"[경어 모드] 비즈니스 주제 강제 선택: {selected_title} (확률: {int(_keigo_threshold*100)}%)")
         use_rss = False
     elif use_rss:
         pass  # 아래 RSS 블록에서 처리
