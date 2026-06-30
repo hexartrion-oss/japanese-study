@@ -373,6 +373,8 @@ def _continuation_needed(current: str, next_line: str) -> bool:
     )
     if current and current[-1] == "、":
         return True
+    if current and current[-1] == "、":
+        return True
     if _CONTINUATION_START.match(next_line):
         return True
     if current and current[-1] in _CLOSING_QUOTES:
