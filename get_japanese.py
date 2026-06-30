@@ -224,13 +224,33 @@ _TOPIC_POOL = {
         "二日間の小旅行",
         "ふるさとへの帰省",
     ],
+    # N1 / N0 / JPT 800 / JPT 900 — 비즈니스 주제 포함 (경어체 발동)
+    "N1": [
+        "取引先へのメール対応",
+        "会議の議事録作成",
+        "プロジェクト進捗報告",
+        "新入社員研修の企画",
+        "クライアントへの提案書",
+        "社内稟議書の作成",
+        "業務改善の提言",
+        "人事評価制度の見直し",
+        "グローバル人材の育成",
+        "デジタルトランスフォーメーション推進",
+        "持続可能な経営戦略",
+        "ダイバーシティと企業文化",
+        "リモートワークの課題と対策",
+        "M&Aによる事業拡大",
+        "ESG投資と企業価値",
+    ],
 }
 
 def _get_topic_pool(label: str) -> list:
     """레벨에 맞는 주제 풀 반환."""
     if label in {"JLPT N4", "JPT 300", "JPT 400"}:
         return _TOPIC_POOL["N4"]
-    return _TOPIC_POOL["N3"]  # JLPT N3, JPT 500
+    if label in {"JLPT N1", "JLPT N0", "JPT 800", "JPT 900"}:
+        return _TOPIC_POOL["N1"]
+    return _TOPIC_POOL["N3"]  # JLPT N3, JPT 500, N2
 
 # ── Gemini API 공통 호출 ──────────────────────────────
 _GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite"]
@@ -627,14 +647,11 @@ def fetch_study_lines(label: str) -> tuple:
         if not raw_lines:
             print("[중단] Gemini 응답 없음 — 다른 주제로 재시도")
             if use_rss:
-                pool_key = "N3" if label in {"JLPT N2", "JPT 600", "JPT 700"} else "N4"
-                new_theme = random.choice(_TOPIC_POOL[pool_key])
+                new_theme = random.choice(_get_topic_pool(label))
             else:
                 new_theme = random.choice(_get_topic_pool(label))
             while new_theme in tried_titles and len(tried_titles) < 10:
-                new_theme = random.choice(
-                    _TOPIC_POOL["N3"] if use_rss else _get_topic_pool(label)
-                )
+                new_theme = random.choice(_get_topic_pool(label))
             tried_titles.add(new_theme)
             selected_title = new_theme
             selected_url = ""
@@ -653,16 +670,9 @@ def fetch_study_lines(label: str) -> tuple:
                 print(f"[안전필터 차단 의심] 새 제목으로 교체: {selected_title}")
                 continue
 
-        if use_rss:
-            pool_key = "N3" if label in {"JLPT N2", "JPT 600", "JPT 700"} else "N4"
-            new_theme = random.choice(_TOPIC_POOL[pool_key])
-        else:
-            new_theme = random.choice(_get_topic_pool(label))
-
+        new_theme = random.choice(_get_topic_pool(label))
         while new_theme in tried_titles and len(tried_titles) < 10:
-            new_theme = random.choice(
-                _TOPIC_POOL["N3"] if use_rss else _get_topic_pool(label)
-            )
+            new_theme = random.choice(_get_topic_pool(label))
         tried_titles.add(new_theme)
         selected_title = new_theme
         selected_url = ""
@@ -767,7 +777,13 @@ def main():
         mode = "JLPT"
         week_label = f"Week {week_num} (JLPT)"
 
-    label = random.choice(plan)
+    force_level = os.environ.get("FORCE_LEVEL", "").strip()
+    all_levels = JPT_PLAN + JLPT_PLAN
+    if force_level in all_levels:
+        label = force_level
+        print(f"[FORCE_LEVEL] {label} 강제 지정")
+    else:
+        label = random.choice(plan)
     print(f"Today: {label} | {week_label}")
 
     title, url, sentences = fetch_study_lines(label)
