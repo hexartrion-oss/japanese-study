@@ -371,6 +371,8 @@ def _continuation_needed(current: str, next_line: str) -> bool:
     _CONTINUATION_START = re.compile(
         r"^(と|が|を|に|で|は|も|か|な|の|より|から|まで|として|について|によって|において)"
     )
+    if current and current[-1] == "、":
+        return True
     if _CONTINUATION_START.match(next_line):
         return True
     if current and current[-1] in _CLOSING_QUOTES:
@@ -552,7 +554,7 @@ def write_story_with_gemini(theme: str, label: str, attempt: int = 0) -> list:
 【出力ルール — 全て絶対厳守】
 1. 文章のみを出力する（タイトル・ヘッダー・番号・説明・コメント禁止）
 2. マークダウン記号（**、##など）は一切使用しない
-3. 20文出力する（少なくても多くても禁止）
+3. 10文出力する（少なくても多くても禁止）
 4. 1行に1文のみ、改行で区切る
 5. 各文は必ず「。」で終わること
 6. 文が途中で切れることは絶対禁止
