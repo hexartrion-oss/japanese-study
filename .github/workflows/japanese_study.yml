@@ -4,7 +4,12 @@ on:
   schedule:
         # 월~금 오후 8시 KST = 월~금 11:00 UTC
         - cron: '0 11 * * 1,2,3,4,5'
-  workflow_dispatch: # 수동 실행 (테스트용)
+  workflow_dispatch:
+    inputs:
+      force_level:
+        description: '레벨 강제 지정 (예: JLPT N1, JLPT N0, JPT 800)'
+        required: false
+        default: ''
 
 jobs:
   send-japanese:
@@ -35,6 +40,7 @@ jobs:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          FORCE_LEVEL: ${{ github.event.inputs.force_level }}
         run: python get_japanese.py
 
       - name: 결과 알림 이메일 발송
