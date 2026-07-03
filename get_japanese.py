@@ -281,13 +281,20 @@ def _call_gemini(prompt: str, temperature: float = 0.1, max_tokens: int = 1024) 
         print(f"[Gemini] 모델 시도: {model_id}")
         for attempt in range(2):
             try:
+                config_kwargs = {
+                    "temperature": temperature,
+                    "max_output_tokens": max_tokens,
+                }
+                # gemini-2.5 계열은 thinking 토큰이 max_output_tokens를 소모해
+                # 응답이 절단(5~7줄)되므로 thinking을 비활성화
+                if "2.5" in model_id:
+                    config_kwargs["thinking_config"] = genai_types.ThinkingConfig(
+                        thinking_budget=0
+                    )
                 response = client.models.generate_content(
                     model=model_id,
                     contents=prompt,
-                    config=genai_types.GenerateContentConfig(
-                        temperature=temperature,
-                        max_output_tokens=max_tokens,
-                    ),
+                    config=genai_types.GenerateContentConfig(**config_kwargs),
                 )
                 return response.text or ""
             except Exception as e:
@@ -603,7 +610,7 @@ def write_story_with_gemini(theme: str, label: str, attempt: int = 0) -> list:
 
 今すぐ20文の読み物を書いてください："""
 
-    raw = _call_gemini(prompt, temperature=0.1, max_tokens=2048)
+    raw = _call_gemini(prompt, temperature=0.1, max_tokens=4096)
     if not raw:
         return []
 
@@ -676,7 +683,8 @@ def fetch_study_lines(label: str) -> tuple:
     sentences = []
     tried_titles = {selected_title}
 
-    for attempt in range(3):
+    _MAX_ATTEMPTS = 4
+    for attempt in range(_MAX_ATTEMPTS):
         raw_lines = write_story_with_gemini(selected_title, label, attempt=attempt)
 
         if not raw_lines:
@@ -690,7 +698,7 @@ def fetch_study_lines(label: str) -> tuple:
             tried_titles.add(new_theme)
             selected_title = new_theme
             selected_url = ""
-            print(f"[재시도 {attempt + 1}/3] 새 주제: {selected_title}")
+            print(f"[재시도 {attempt + 1}/{_MAX_ATTEMPTS}] 새 주제: {selected_title}")
             continue
 
         sentences = validate_sentences(raw_lines, label)
@@ -711,7 +719,7 @@ def fetch_study_lines(label: str) -> tuple:
         tried_titles.add(new_theme)
         selected_title = new_theme
         selected_url = ""
-        print(f"[재시도 {attempt + 1}/3] 새 주제: {selected_title}")
+        print(f"[재시도 {attempt + 1}/{_MAX_ATTEMPTS}] 새 주제: {selected_title}")
 
     return selected_title, selected_url, sentences
 
