@@ -30,6 +30,7 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
 GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS")
 GMAIL_APP_PW = os.environ.get("GMAIL_APP_PASSWORD")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+EMAIL_RECIPIENTS = os.environ.get("EMAIL_RECIPIENTS", "")
 
 try:
     from dotenv import load_dotenv
@@ -37,6 +38,7 @@ try:
     GMAIL_ADDRESS = GMAIL_ADDRESS or os.getenv("GMAIL_ADDRESS")
     GMAIL_APP_PW = GMAIL_APP_PW or os.getenv("GMAIL_APP_PASSWORD")
     GEMINI_API_KEY = GEMINI_API_KEY or os.getenv("GEMINI_API_KEY")
+    EMAIL_RECIPIENTS = EMAIL_RECIPIENTS or os.getenv("EMAIL_RECIPIENTS", "")
 except ImportError:
     pass
 
@@ -782,9 +784,14 @@ def send_email(date_str: str, label: str, mode: str):
         print(f"[오류] PDF 파일 없음: {OUTPUT_PDF} — 이메일 전송 건너뜀.")
         return
     try:
+        recipients = [GMAIL_ADDRESS]
+        for addr in re.split(r"[,;\s]+", EMAIL_RECIPIENTS):
+            addr = addr.strip()
+            if addr and addr not in recipients:
+                recipients.append(addr)
         msg = MIMEMultipart()
         msg["From"] = GMAIL_ADDRESS
-        msg["To"] = GMAIL_ADDRESS
+        msg["To"] = ", ".join(recipients)
         msg["Subject"] = f"[Japanese Study] {date_str} — {label}"
         msg.attach(MIMEText(
             f"Today's Japanese study material.\nLevel: {label}\nMode: {mode}",
@@ -801,7 +808,7 @@ def send_email(date_str: str, label: str, mode: str):
             server.starttls()
             server.login(GMAIL_ADDRESS, GMAIL_APP_PW)
             server.send_message(msg)
-        print(f"Email sent → {GMAIL_ADDRESS}")
+        print(f"Email sent → {', '.join(recipients)}")
     except Exception as e:
         print(f"Email failed: {e}")
 
