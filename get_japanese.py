@@ -394,9 +394,6 @@ def _sentence_ends_properly(s: str) -> bool:
     return False
 
 def _merge_split_lines(lines: list) -> list:
-    _CONTINUATION_START = re.compile(
-        r"^(と|が|を|に|で|は|も|か|な|の|より|から|まで|として|について|によって|において)"
-    )
     merged = []
     i = 0
     while i < len(lines):
@@ -417,8 +414,6 @@ def _continuation_needed(current: str, next_line: str) -> bool:
     _CONTINUATION_START = re.compile(
         r"^(と|が|を|に|で|は|も|か|な|の|より|から|まで|として|について|によって|において)"
     )
-    if current and current[-1] == "、":
-        return True
     if current and current[-1] == "、":
         return True
     if _CONTINUATION_START.match(next_line):
@@ -539,7 +534,7 @@ def select_title_with_gemini(title_pairs: list, label: str) -> tuple:
 
 # ── 문장 생성 ─────────────────────────────────────────
 def write_story_with_gemini(theme: str, label: str, attempt: int = 0) -> list:
-    """주제로 Gemini가 지정 레벨 읽기 자료(10문장) 창작."""
+    """주제로 Gemini가 지정 레벨 읽기 자료(20문장) 창작."""
     if not GEMINI_AVAILABLE or not GEMINI_API_KEY:
         print("Gemini API not available.")
         return []
@@ -658,8 +653,6 @@ def fetch_study_lines(label: str) -> tuple:
         title_pairs = [(selected_title, selected_url)]
         print(f"[경어 모드] 비즈니스 주제 강제 선택: {selected_title} (확률: {int(_keigo_threshold*100)}%)")
         use_rss = False
-    elif use_rss:
-        pass  # 아래 RSS 블록에서 처리
 
     if use_rss:
         title_pairs = crawl_titles(count=10)
@@ -691,10 +684,7 @@ def fetch_study_lines(label: str) -> tuple:
 
         if not raw_lines:
             print("[중단] Gemini 응답 없음 — 다른 주제로 재시도")
-            if use_rss:
-                new_theme = random.choice(_get_topic_pool(label))
-            else:
-                new_theme = random.choice(_get_topic_pool(label))
+            new_theme = random.choice(_get_topic_pool(label))
             while new_theme in tried_titles and len(tried_titles) < 10:
                 new_theme = random.choice(_get_topic_pool(label))
             tried_titles.add(new_theme)
