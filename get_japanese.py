@@ -80,6 +80,65 @@ RSS_LEVELS = {"JLPT N2", "JLPT N1", "JLPT N0", "JPT 600", "JPT 700", "JPT 800", 
 # 경어 표현 적용 레벨 (N1/JPT800 포함)
 KEIGO_LEVELS = {"JLPT N1", "JLPT N0", "JPT 800", "JPT 900"}
 
+# ── 다양화 시드 (프롬프트 고정화 방지) ─────────────────
+# 초급: 서술 목적 × 마무리 방식
+_SEED_N4_PURPOSE = [
+    "今日あったことを時間の順に書く日記",
+    "最近の楽しかった思い出を振り返る日記",
+    "明日や週末の計画と楽しみを書く日記",
+    "初めて経験したことについて書く日記",
+    "小さな失敗と次にどうしたいかを書く日記",
+]
+_SEED_N4_ENDING = [
+    "最後の文は次の予定や計画で終わること",
+    "最後の文は学んだことや気づいたことで終わること",
+    "最後の文は感謝の気持ちや感想で終わること",
+    "最後の文は楽しみな気持ちや期待で終わること",
+]
+# 중급 (N3/JPT500): 장르(だ・である 유지 범위) × 관점
+_SEED_N3_GENRE = [
+    "身近な話題を扱う生活コラム",
+    "地域の話題を伝える解説記事",
+    "変化やトレンドを紹介する記事",
+]
+_SEED_MID_VIEW = [
+    "良い点と問題点の両方を比較しながら書くこと",
+    "以前と現在の変化を対比しながら書くこと",
+    "読者への具体的な助言を中心に書くこと",
+    "具体的な事例や場面を中心に書くこと",
+]
+# N2 이상: 장르 × 관점 (+ A/B 대립 의견문)
+_AB_GENRE = "AB_OPPOSING"
+_SEED_ADV_GENRE = [
+    "事実を客観的に伝える解説記事",
+    "背景や原因を掘り下げる分析記事",
+    "業界や社会全体の動向を紹介するリポート",
+    "一人の筆者が賛否両面を整理する評論",
+    "明確な主張と提言で締めくくる寄稿文",
+    _AB_GENRE,
+]
+_SEED_ADV_VIEW = [
+    "時間の流れ（過去→現在→今後）に沿って書くこと",
+    "具体的な事例や数字を中心に書くこと",
+    "課題とその解決策という構図で書くこと",
+    "一般的な通念に疑問を投げかける導入で始めること",
+]
+_SEED_AB_STANCE = [
+    "Aは賛成、Bは反対の立場",
+    "Aは積極的な推進、Bは慎重論の立場",
+    "Aは個人の工夫を重視、Bは社会の仕組みづくりを重視する立場",
+    "Aは効率や利便性を優先、Bは安全や安心を優先する立場",
+]
+# 경어 모드: 문서 유형
+_SEED_KEIGO_DOC = [
+    "上司への社内報告メール",
+    "取引先への依頼・案内文",
+    "会議の議事録",
+    "クレームへの対応・お詫び文",
+    "業務の引き継ぎ文書",
+    "社外向けプレゼンテーションの原稿",
+]
+
 LEVEL_DESC = {
     "JLPT N4": {
         "desc": "JLPT N4（基礎）",
@@ -382,6 +441,7 @@ def has_block_keyword(text: str) -> bool:
 # ── 문장 완성도 검증 ──────────────────────────────────
 _SENTENCE_END = set("。！？")
 _CLOSING_QUOTES = set("」』）")
+_SECTION_HEADERS = ("【Aの意見】", "【Bの意見】")
 
 def _sentence_ends_properly(s: str) -> bool:
     if not s:
@@ -398,6 +458,10 @@ def _merge_split_lines(lines: list) -> list:
     i = 0
     while i < len(lines):
         current = lines[i]
+        if current in _SECTION_HEADERS:
+            merged.append(current)
+            i += 1
+            continue
         if not _sentence_ends_properly(current) and i + 1 < len(lines):
             next_line = lines[i + 1]
             combined = current + next_line
@@ -433,7 +497,7 @@ def validate_sentences(sentences: list, label: str) -> list:
 
     cleaned = _merge_split_lines(cleaned)
 
-    incomplete = [s for s in cleaned if s and not _sentence_ends_properly(s)]
+    incomplete = [s for s in cleaned if s and not _sentence_ends_properly(s) and s not in _SECTION_HEADERS]
     if incomplete:
         print("\n" + "=" * 60)
         print(f"[경고] 불완전 문장 {len(incomplete)}개 발견 — 유효 문장만 유지")
@@ -443,15 +507,26 @@ def validate_sentences(sentences: list, label: str) -> list:
             mark = " ← 불완전" if not _sentence_ends_properly(s) else ""
             print(f"{i:2}. {s}{mark}")
         print("=" * 60)
-        cleaned = [s for s in cleaned if _sentence_ends_properly(s)]
+        cleaned = [s for s in cleaned if _sentence_ends_properly(s) or s in _SECTION_HEADERS]
         if not cleaned:
             return []
 
-    valid = [s for s in cleaned if len(s) >= 10]
+    valid = [s for s in cleaned if len(s) >= 10 or s in _SECTION_HEADERS]
 
-    if len(valid) < 10:
+    if len([s for s in valid if s not in _SECTION_HEADERS]) < 10:
         print(f"[경고] 문장 수 부족: {len(valid)}개 (10개 필요 — 재시도)")
         return []
+
+    if "【Aの意見】" in valid or "【Bの意見】" in valid:
+        if not ("【Aの意見】" in valid and "【Bの意見】" in valid):
+            print("[경고] A/B 형식 불완전 — 재시도")
+            return []
+        _bi = valid.index("【Bの意見】")
+        _ac = len([s for s in valid[:_bi] if s not in _SECTION_HEADERS])
+        _bc = len([s for s in valid[_bi + 1:] if s not in _SECTION_HEADERS])
+        if _ac < 8 or _bc < 8:
+            print(f"[경고] A/B 분량 부족 (A:{_ac}문, B:{_bc}문) — 재시도")
+            return []
 
     return valid
 
@@ -533,7 +608,8 @@ def select_title_with_gemini(title_pairs: list, label: str) -> tuple:
     return title_pairs[0] if title_pairs else ("今日のニュース", "")
 
 # ── 문장 생성 ─────────────────────────────────────────
-def write_story_with_gemini(theme: str, label: str, attempt: int = 0) -> list:
+def write_story_with_gemini(theme: str, label: str, attempt: int = 0,
+                            business_doc: bool = False) -> list:
     """주제로 Gemini가 지정 레벨 읽기 자료(20문장) 창작."""
     if not GEMINI_AVAILABLE or not GEMINI_API_KEY:
         print("Gemini API not available.")
@@ -542,6 +618,49 @@ def write_story_with_gemini(theme: str, label: str, attempt: int = 0) -> list:
     lv = LEVEL_DESC.get(label, LEVEL_DESC["JLPT N3"])
     is_beginner = label in {"JLPT N4", "JPT 300", "JPT 400"}
     is_keigo    = label in KEIGO_LEVELS  # N1 / JPT800 / N0 / JPT900
+
+    # ── 오늘의 시드 선택 (프롬프트 고정화 방지) ──
+    ab_mode = False
+    ab_stance = ""
+    seed_lines = ""
+    if is_beginner:
+        _sp = random.choice(_SEED_N4_PURPOSE)
+        _se = random.choice(_SEED_N4_ENDING)
+        seed_lines = f"・今日書く日記の種類：{_sp}\n・{_se}"
+        print(f"[시드] 서술: {_sp} / 마무리: {_se}")
+    elif is_keigo:
+        if business_doc:
+            _sd = random.choice(_SEED_KEIGO_DOC)
+            seed_lines = (
+                f"・「{_sd}」の本文として書くこと"
+                f"（件名・宛名・挨拶・署名は書かない）"
+            )
+            print(f"[시드] 경어 문서: {_sd}")
+        else:
+            _sg = random.choice(_SEED_ADV_GENRE)
+            if _sg == _AB_GENRE:
+                ab_mode = True
+                ab_stance = random.choice(_SEED_AB_STANCE)
+                print(f"[시드] A/B 대립 의견문 모드: {ab_stance}")
+            else:
+                _sv = random.choice(_SEED_ADV_VIEW)
+                seed_lines = f"・記事の種類：{_sg}\n・{_sv}"
+                print(f"[시드] 장르: {_sg} / 관점: {_sv}")
+    elif label in {"JLPT N3", "JPT 500"}:
+        _sg = random.choice(_SEED_N3_GENRE)
+        _sv = random.choice(_SEED_MID_VIEW)
+        seed_lines = f"・記事の種類：{_sg}（だ・である調を維持すること）\n・{_sv}"
+        print(f"[시드] 장르: {_sg} / 관점: {_sv}")
+    else:
+        _sg = random.choice(_SEED_ADV_GENRE)
+        if _sg == _AB_GENRE:
+            ab_mode = True
+            ab_stance = random.choice(_SEED_AB_STANCE)
+            print(f"[시드] A/B 대립 의견문 모드: {ab_stance}")
+        else:
+            _sv = random.choice(_SEED_ADV_VIEW)
+            seed_lines = f"・記事の種類：{_sg}\n・{_sv}"
+            print(f"[시드] 장르: {_sg} / 관점: {_sv}")
 
     if is_beginner:
         style_instruction = """【文体】
@@ -596,6 +715,9 @@ def write_story_with_gemini(theme: str, label: str, attempt: int = 0) -> list:
 
 {style_instruction}
 
+【今日の書き方 — 本日のみの指定】
+{seed_lines}
+
 【出力ルール — 全て絶対厳守】
 1. 文章のみを出力する（タイトル・ヘッダー・番号・説明・コメント禁止）
 2. マークダウン記号（**、##など）は一切使用しない
@@ -606,6 +728,35 @@ def write_story_with_gemini(theme: str, label: str, attempt: int = 0) -> list:
 7. 会話文・引用符（「」）は一切使わない
 
 今すぐ20文の読み物を書いてください："""
+
+    if ab_mode:
+        prompt = f"""あなたは日本語教師です。JLPTの統合理解問題のように、同じテーマについて立場の異なるAとBの2つの意見文を書きます。レベルは{lv['desc']}です。
+
+【テーマ】「{theme}」
+【立場の構図】{ab_stance}
+
+【語彙制限 — 絶対厳守】
+{lv['vocab']}
+※ 上記レベル外の語彙・専門用語は一切使用禁止
+
+【使用する文法パターン】
+{lv['grammar']}
+
+【文体】
+・AもBもだ・である調で統一する
+・会話文・引用符（「」）は一切使わない
+・AとBは同じ事実を扱いながら、明確に異なる立場を取ること
+・それぞれの最後の1〜2文に、相手の立場への間接的な反論を含めること
+
+【出力ルール — 全て絶対厳守】
+1. 1行目に【Aの意見】とだけ書く
+2. 2行目からAの意見文を10文書く（1行1文）
+3. 次の行に【Bの意見】とだけ書く
+4. その後Bの意見文を10文書く（1行1文）
+5. 見出し2行以外の各文は必ず「。」で終わること
+6. マークダウン記号・番号・タイトル・説明・コメントは一切禁止
+
+今すぐ書いてください："""
 
     raw = _call_gemini(prompt, temperature=0.1, max_tokens=4096)
     if not raw:
@@ -643,6 +794,7 @@ def fetch_study_lines(label: str) -> tuple:
     Gemini 503/안전필터 차단 시 → 다른 주제로 재시도
     """
     use_rss = label in RSS_LEVELS
+    keigo_business = False
 
     # KEIGO_LEVELS: 비즈니스 주제 강제 → 경어 발동 보장
     # JLPT N1/N0: 75% (BJT 대응 강화), JPT 800/900: 50%
@@ -653,6 +805,7 @@ def fetch_study_lines(label: str) -> tuple:
         title_pairs = [(selected_title, selected_url)]
         print(f"[경어 모드] 비즈니스 주제 강제 선택: {selected_title} (확률: {int(_keigo_threshold*100)}%)")
         use_rss = False
+        keigo_business = True
 
     if use_rss:
         title_pairs = crawl_titles(count=10)
@@ -680,7 +833,8 @@ def fetch_study_lines(label: str) -> tuple:
 
     _MAX_ATTEMPTS = 4
     for attempt in range(_MAX_ATTEMPTS):
-        raw_lines = write_story_with_gemini(selected_title, label, attempt=attempt)
+        raw_lines = write_story_with_gemini(selected_title, label, attempt=attempt,
+                                            business_doc=keigo_business)
 
         if not raw_lines:
             print("[중단] Gemini 응답 없음 — 다른 주제로 재시도")
@@ -690,6 +844,8 @@ def fetch_study_lines(label: str) -> tuple:
             tried_titles.add(new_theme)
             selected_title = new_theme
             selected_url = ""
+            if label in KEIGO_LEVELS:
+                keigo_business = True
             print(f"[재시도 {attempt + 1}/{_MAX_ATTEMPTS}] 새 주제: {selected_title}")
             continue
 
@@ -711,6 +867,8 @@ def fetch_study_lines(label: str) -> tuple:
         tried_titles.add(new_theme)
         selected_title = new_theme
         selected_url = ""
+        if label in KEIGO_LEVELS:
+            keigo_business = True
         print(f"[재시도 {attempt + 1}/{_MAX_ATTEMPTS}] 새 주제: {selected_title}")
 
     return selected_title, selected_url, sentences
@@ -757,6 +915,14 @@ def build_pdf(label: str, title: str, url: str,
 
     pdf.set_font("JP", size=11)
     for line in lines:
+        if line in _SECTION_HEADERS:
+            pdf.ln(2)
+            pdf.set_fill_color(234, 240, 255)
+            pdf.set_font("JP", size=12)
+            pdf.cell(0, 8, line, new_x=XPos.LMARGIN, new_y=YPos.NEXT, fill=True)
+            pdf.set_font("JP", size=11)
+            pdf.ln(1)
+            continue
         pdf.multi_cell(0, 8, line, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
     pdf.output(OUTPUT_PDF)
