@@ -139,6 +139,37 @@ _SEED_KEIGO_DOC = [
     "社外向けプレゼンテーションの原稿",
 ]
 
+# ── 조합식 주제 확장 부품 (내용 다양성: 풀 크기를 곱셈으로 확장) ──
+# N4: 장소(12) × 사건(6) = 72개 조합
+_N4_PLACES = [
+    "スーパー", "図書館", "公園", "駅", "学校", "動物園",
+    "郵便局", "病院", "レストラン", "デパート", "海", "山",
+]
+_N4_EVENTS = [
+    "楽しかったこと", "困ったこと", "初めてしたこと",
+    "友達と過ごした時間", "家族と過ごした時間", "びっくりしたこと",
+]
+# N3: 장면(10) × 각도(6) = 60개 조합
+_N3_SCENES = [
+    "アルバイト先", "旅行先", "料理教室", "スポーツジム", "商店街",
+    "電車の中", "職場", "引っ越した町", "地域の行事", "オンライン授業",
+]
+_N3_ANGLES = [
+    "経験した小さな失敗", "出会った人とのできごと", "気づいた変化",
+    "学んだこと", "起きた思わぬ出来事", "続けている工夫",
+]
+# 비즈니스(N1/N0/JPT800/900): 부서(15) × 상황(8) = 120개 조합
+_BIZ_DOMAINS = [
+    "人事", "営業", "経理", "総務", "企画", "製造", "物流", "購買",
+    "広報", "法務", "情報システム", "品質管理", "海外事業",
+    "研究開発", "カスタマーサポート",
+]
+_BIZ_SITUATIONS = [
+    "新制度の導入", "業務改善の提案", "トラブルへの対応と報告",
+    "取引先との交渉", "社内研修の企画", "プロジェクトの進捗報告",
+    "コスト削減の取り組み", "顧客満足度向上の施策",
+]
+
 LEVEL_DESC = {
     "JLPT N4": {
         "desc": "JLPT N4（基礎）",
@@ -321,6 +352,13 @@ _TOPIC_POOL = {
         "退職・異動の挨拶と引き継ぎ",
     ],
 }
+
+# ── 조합식 주제를 풀에 병합 (수제 30개 + 조합 = 90~150개) ──
+_TOPIC_POOL["N4"] += [f"{p}で{e}" for p in _N4_PLACES for e in _N4_EVENTS]          # 30 + 72 = 102
+_TOPIC_POOL["N3"] += [f"{s}で{a}" for s in _N3_SCENES for a in _N3_ANGLES]          # 30 + 60 = 90
+_TOPIC_POOL["N1"] += [
+    f"{d}部門における{s}" for d in _BIZ_DOMAINS for s in _BIZ_SITUATIONS
+]                                                                                    # 30 + 120 = 150
 
 def _get_topic_pool(label: str) -> list:
     """레벨에 맞는 주제 풀 반환."""
@@ -535,7 +573,7 @@ def pick_topic(label: str) -> tuple:
     """N3/N4용 — 주제 풀에서 랜덤으로 주제 선택. (title, url) 형식 반환."""
     pool = _get_topic_pool(label)
     topic = random.choice(pool)
-    print(f"[주제 풀] 선택된 주제: {topic}")
+    print(f"[주제 풀] 선택된 주제: {topic} (풀 크기: {len(pool)})")
     return topic, ""
 
 # ── N2 이상: NHK RSS 크롤링 ──────────────────────────
@@ -608,6 +646,10 @@ def select_title_with_gemini(title_pairs: list, label: str) -> tuple:
     return title_pairs[0] if title_pairs else ("今日のニュース", "")
 
 # ── 문장 생성 ─────────────────────────────────────────
+# 온도 사다리: 첫 시도는 다양성 우선(0.8), 검증 실패로 재시도할수록
+# 보수적인 온도로 내려가 최종 전송 성공률을 보전한다.
+_TEMP_LADDER = [0.8, 0.6, 0.3, 0.1]
+
 def write_story_with_gemini(theme: str, label: str, attempt: int = 0,
                             business_doc: bool = False) -> list:
     """주제로 Gemini가 지정 레벨 읽기 자료(20문장) 창작."""
@@ -758,7 +800,9 @@ def write_story_with_gemini(theme: str, label: str, attempt: int = 0,
 
 今すぐ書いてください："""
 
-    raw = _call_gemini(prompt, temperature=0.1, max_tokens=4096)
+    temp = _TEMP_LADDER[min(attempt, len(_TEMP_LADDER) - 1)]
+    print(f"[온도 사다리] attempt {attempt + 1} → temperature={temp}")
+    raw = _call_gemini(prompt, temperature=temp, max_tokens=4096)
     if not raw:
         return []
 
@@ -822,7 +866,7 @@ def fetch_study_lines(label: str) -> tuple:
             title_pairs = [(theme, "")]
         else:
             selected_title, selected_url = select_title_with_gemini(title_pairs, label)
-    else:
+    elif not keigo_business:
         selected_title, selected_url = pick_topic(label)
         title_pairs = [(selected_title, selected_url)]
 
@@ -872,6 +916,38 @@ def fetch_study_lines(label: str) -> tuple:
         print(f"[재시도 {attempt + 1}/{_MAX_ATTEMPTS}] 새 주제: {selected_title}")
 
     return selected_title, selected_url, sentences
+
+# ── 레벨 선택: 주간 셔플 백 (랜덤성 + 순환 보장) ──────
+def _plan_for_date(dt: datetime.date) -> list:
+    """해당 날짜의 주 모드에 따른 레벨 plan.
+    주 단위 JPT/JLPT 구분은 get_week_of_month 홀짝으로 확정적 (근간 — 불변)."""
+    return JPT_PLAN[:] if get_week_of_month(dt) % 2 == 1 else JLPT_PLAN[:]
+
+def _weekly_bag(dt: datetime.date) -> list:
+    """그 주 월요일 날짜를 시드로 plan을 셔플한 '이번 주 레벨 순서'.
+    같은 주에는 순서가 고정되고, 주가 바뀌면 새로 섞인다 (상태 저장 불필요)."""
+    monday = dt - datetime.timedelta(days=dt.weekday())
+    bag = _plan_for_date(dt)
+    random.Random(monday.toordinal()).shuffle(bag)
+    return bag
+
+def pick_level(today: datetime.date) -> str:
+    """주간 셔플 백 방식 레벨 선택.
+    - JPT주(7레벨/7일): 한 주에 모든 레벨이 정확히 1회, 순서는 주마다 랜덤
+    - JLPT주(5레벨/7일): 5레벨 전부 등장 + 2개 레벨만 2회 (어느 레벨인지도 주마다 랜덤)
+    - 요일-레벨 고정 패턴 없음 (단순 날짜 순환의 패턴화 문제 해결)
+    - 주 경계 가드: 지난주 마지막 날과 같은 레벨로 이번 주가 시작되면 앞 2개 스왑
+      (가드 계산이 요일과 무관하게 주 단위로 동일 → 주 내 순열 일관성 유지)
+    """
+    bag = _weekly_bag(today)
+    if len(bag) > 1:
+        monday = today - datetime.timedelta(days=today.weekday())
+        prev_sunday = monday - datetime.timedelta(days=1)
+        prev_bag = _weekly_bag(prev_sunday)
+        prev_label = prev_bag[prev_sunday.weekday() % len(prev_bag)]
+        if bag[0] == prev_label:
+            bag[0], bag[1] = bag[1], bag[0]
+    return bag[today.weekday() % len(bag)]
 
 # ── PDF 생성 ───────────────────────────────────────────
 def build_pdf(label: str, title: str, url: str,
@@ -989,7 +1065,8 @@ def main():
         label = force_level
         print(f"[FORCE_LEVEL] {label} 강제 지정")
     else:
-        label = random.choice(plan)
+        # 주간 셔플 백: 주 모드(JPT/JLPT)는 위에서 확정, 주 안에서만 랜덤 순환
+        label = pick_level(today)
     print(f"Today: {label} | {week_label}")
 
     title, url, sentences = fetch_study_lines(label)
