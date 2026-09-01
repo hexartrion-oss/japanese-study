@@ -436,7 +436,9 @@ def _get_topic_pool(label: str) -> list:
     return _TOPIC_POOL["N3"]  # JLPT N3, JPT 500, N2
 
 # ── Gemini API 공통 호출 ──────────────────────────────
-_GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite"]
+# gemini-2.0-flash / gemini-2.0-flash-lite는 2026-06-01부로 Google이 서비스 종료함.
+# 2.5세대를 우선 유지하고, 마지막 폴백만 3세대(3.5)로 전환.
+_GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.5-flash"]
 
 def _call_gemini(prompt: str, temperature: float = 0.1, max_tokens: int = 1024) -> str:
     """quota/503 오류 시 대기 후 재시도, 모델 폴백 포함."""
@@ -485,8 +487,10 @@ def _call_gemini(prompt: str, temperature: float = 0.1, max_tokens: int = 1024) 
                     print(f"[Gemini] {model_id} 503 재시도 실패 → 다음 모델로 전환")
                     time.sleep(10)
                     break
-                print(f"[Gemini] API 오류: {e}")
-                return ""
+                # 429/503이 아닌 오류(예: 404 — 모델 폐기/미지원)는 이 모델만 포기하고
+                # 즉시 함수를 끝내지 말고 폴백 리스트의 다음 모델로 넘어간다.
+                print(f"[Gemini] {model_id} API 오류(폴백 전환): {e}")
+                break
     print("[Gemini] 모든 모델 실패")
     return ""
 
