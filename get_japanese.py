@@ -49,12 +49,20 @@ OUTPUT_PDF = os.path.join(os.path.dirname(__file__), "JPN.pdf")
 MANUAL_RUN = os.environ.get("MANUAL_RUN") == "1"
 MANUAL_MAIL_TO = "hexartrion@gmail.com"  # 수동 실행 시 유일한 수신자
 
-RUN_LOG = []  # 수동 실행 메일 본문에 첨부할 생성 로그
+RUN_LOG = []  # 생성 로그 (파일로도 기록 → 알림 메일이 kwonyh000@naver.com에 첨부)
+RUN_LOG_FILE = os.path.join(os.path.dirname(__file__), "run_log.txt")
+RUN_META_FILE = os.path.join(os.path.dirname(__file__), "run_meta.txt")  # 테스트 정보 블록
 
 def _rlog(msg: str):
-    """콘솔 출력 + (수동 실행용) 메일 첨부 로그 축적."""
+    """콘솔 출력 + 생성 로그 축적 + run_log.txt 기록.
+    로그는 결과 알림 메일(kwonyh000@naver.com)에서만 열람한다."""
     print(msg)
     RUN_LOG.append(str(msg))
+    try:
+        with open(RUN_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(str(msg) + "\n")
+    except OSError:
+        pass
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -904,12 +912,14 @@ def _retry_theme(label: str, tried_titles: set) -> str:
     tried_titles.add(new_theme)
     return new_theme
 
-def fetch_study_lines(label: str, force_business: bool = False) -> tuple:
+def fetch_study_lines(label: str, force_business: bool = False,
+                      force_plain: bool = False) -> tuple:
     """
     N3/N4: 주제 풀 → 바로 문장 생성
     N2 이상: NHK RSS → 제목 선택 → 문장 생성
     Gemini 503/안전필터 차단 시 → 다른 주제로 재시도
-    force_business: 수동 실행 '비즈니스 경어' 선택 시 경어 문서 모드 강제
+    force_business: 수동 실행 'JLPT N1(경어)/N0(경어)' 선택 시 경어 문서 모드 강제
+    force_plain:    수동 실행 무표기 N1/N0 선택 시 통상문서(논술체) 강제 (경어 굴림 생략)
     """
     use_rss = label in RSS_LEVELS
     keigo_business = False
@@ -918,7 +928,8 @@ def fetch_study_lines(label: str, force_business: bool = False) -> tuple:
     # JLPT N1/N0: 75% (BJT 대응 강화), JPT 800/900: 50%
     _bjt_levels = {"JLPT N1", "JLPT N0"}
     _keigo_threshold = 0.75 if label in _bjt_levels else 0.5
-    if label in KEIGO_LEVELS and (force_business or random.random() < _keigo_threshold):
+    if (label in KEIGO_LEVELS and not force_plain
+            and (force_business or random.random() < _keigo_threshold)):
         selected_title, selected_url = pick_topic(label)
         title_pairs = [(selected_title, selected_url)]
         _how = "수동 강제" if force_business else f"확률 {int(_keigo_threshold*100)}%"
@@ -972,7 +983,7 @@ def fetch_study_lines(label: str, force_business: bool = False) -> tuple:
 
         selected_title = _retry_theme(label, tried_titles)
         selected_url = ""
-        if label in KEIGO_LEVELS:
+        if label in KEIGO_LEVELS and not force_plain:
             keigo_business = True
         _rlog(f"[재시도 {attempt + 1}/{_MAX_ATTEMPTS}] 새 주제: {selected_title}")
 
@@ -1066,8 +1077,7 @@ def build_pdf(label: str, title: str, url: str,
     print(f"PDF saved: {OUTPUT_PDF} ({len(lines)} lines)")
 
 # ── 이메일 전송 ────────────────────────────────────────
-def send_email(date_str: str, label: str, mode: str,
-               level_choice: str = "", title: str = "", business: bool = False):
+def send_email(date_str: str, label: str, mode: str):
     if not GMAIL_ADDRESS or not GMAIL_APP_PW:
         print("Email credentials not set — skipping.")
         return
@@ -1092,22 +1102,11 @@ def send_email(date_str: str, label: str, mode: str,
         msg["To"] = ", ".join(recipients)
         _test_tag = " [TEST]" if MANUAL_RUN else ""
         msg["Subject"] = f"[Japanese Study]{_test_tag} {date_str} — {label}"
+        # 본문은 기존 형태 유지. 수동 실행 시 테스트 안내 한 줄만 추가
+        # (레벨·주제 상세와 생성 로그는 결과 알림 메일(kwonyh000@naver.com) 전용)
+        body = f"Today's Japanese study material.\nLevel: {label}\nMode: {mode}"
         if MANUAL_RUN:
-            lv_desc = LEVEL_DESC.get(label, {}).get("desc", label)
-            body = "\n".join([
-                "※ 본 메일은 수동 실행(workflow_dispatch) 테스트입니다.",
-                "",
-                f"지정 레벨    : {level_choice or '(자동 — 기존 로직)'}",
-                f"적용 레벨    : {label}",
-                f"세부 카테고리 : {lv_desc}",
-                f"모드         : {'비즈니스 경어' if business else mode}",
-                f"주제         : {title}",
-                "",
-                "--- 생성 로그 ---",
-                *RUN_LOG,
-            ])
-        else:
-            body = f"Today's Japanese study material.\nLevel: {label}\nMode: {mode}"
+            body += "\n이 메일은 테스트용 메일 입니다"
         msg.attach(MIMEText(body, "plain", "utf-8"))
         with open(OUTPUT_PDF, "rb") as f:
             part = MIMEBase("application", "octet-stream")
@@ -1143,16 +1142,27 @@ def main():
     level_choice = os.environ.get("LEVEL_CHOICE", "").strip()
     all_levels = JPT_PLAN + JLPT_PLAN
     force_business = False
+    force_plain = False
 
-    if MANUAL_RUN and level_choice == "비즈니스 경어":
-        # 수동 실행: 경어 비즈니스 문서 모드 강제 (기준 레벨은 N1/N0 중 랜덤)
-        label = random.choice(["JLPT N1", "JLPT N0"])
+    # 이전 실행 로그/메타 파일 초기화
+    for _p in (RUN_LOG_FILE, RUN_META_FILE):
+        try:
+            open(_p, "w", encoding="utf-8").close()
+        except OSError:
+            pass
+
+    if MANUAL_RUN and level_choice in ("JLPT N1(경어)", "JLPT N0(경어)"):
+        # 수동 실행: 경어 전용 카테고리 → 비즈니스 상황에서만 경어 문서 생성
+        label = level_choice.replace("(경어)", "")
         force_business = True
-        _rlog(f"[수동 실행] 비즈니스 경어 모드 — 기준 레벨: {label}")
+        _rlog(f"[수동 실행] 경어 카테고리 지정: {level_choice} → 기준 레벨 {label}, 비즈니스 경어 강제")
     elif MANUAL_RUN and level_choice in all_levels:
         # 수동 실행: 기존 로직 무시하고 지정 레벨 사용
         label = level_choice
-        _rlog(f"[수동 실행] 레벨 지정: {label} (주간 로직 무시)")
+        # N1/N0(무표기)는 경어 확률 굴림 없이 항상 통상문서(논술체)로 생성
+        force_plain = label in KEIGO_LEVELS
+        _rlog(f"[수동 실행] 레벨 지정: {label} (주간 로직 무시"
+              + (", 통상문서 강제" if force_plain else "") + ")")
     elif force_level in all_levels:
         label = force_level
         print(f"[FORCE_LEVEL] {label} 강제 지정")
@@ -1161,7 +1171,8 @@ def main():
         label = pick_level(today)
     print(f"Today: {label} | {week_label}")
 
-    title, url, sentences = fetch_study_lines(label, force_business=force_business)
+    title, url, sentences = fetch_study_lines(label, force_business=force_business,
+                                              force_plain=force_plain)
 
     if not sentences:
         raise RuntimeError(
@@ -1169,9 +1180,28 @@ def main():
         )
 
     print(f"Lines validated: {len(sentences)}")
-    build_pdf(label, title, url, sentences, date_str, week_label, mode)
-    send_email(date_str, label, mode,
-               level_choice=level_choice, title=title, business=force_business)
+
+    # 수동 실행 + 경어 카테고리: 메일 표기는 "JLPT N1[경어]", PDF 헤더는 "JLPT N1[敬語]"
+    _is_keigo_cat = MANUAL_RUN and force_business
+    mail_label = f"{label}[경어]" if _is_keigo_cat else label
+    pdf_label = f"{label}[敬語]" if _is_keigo_cat else label
+
+    # 수동 실행: 테스트 정보 블록 기록 → 결과 알림 메일(kwonyh000@naver.com)에 첨부
+    if MANUAL_RUN:
+        try:
+            with open(RUN_META_FILE, "w", encoding="utf-8") as f:
+                f.write("\n".join([
+                    f"지정 레벨    : {level_choice or '(자동 — 기존 로직)'}",
+                    f"적용 레벨    : {mail_label}",
+                    f"세부 카테고리 : {LEVEL_DESC.get(label, {}).get('desc', label)}",
+                    f"모드         : {'비즈니스 경어' if force_business else mode}",
+                    f"주제         : {title}",
+                ]) + "\n")
+        except OSError:
+            pass
+
+    build_pdf(pdf_label, title, url, sentences, date_str, week_label, mode)
+    send_email(date_str, mail_label, mode)
     print("Done!")
 
 if __name__ == "__main__":
