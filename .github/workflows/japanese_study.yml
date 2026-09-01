@@ -6,10 +6,23 @@ on:
         - cron: '0 11 * * 1,2,3,4,5'
   workflow_dispatch:
     inputs:
-      force_level:
-        description: '레벨 강제 지정 (예: JLPT N1, JLPT N0, JPT 800)'
-        required: false
-        default: ''
+      level:
+        description: '레벨 선택 (수동 실행 전용 — 지정 시 기존 로직 무시)'
+        type: choice
+        required: true
+        default: '자동 (기존 로직)'
+        options:
+          - '자동 (기존 로직)'
+          - 'JPT 300'
+          - 'JPT 500'
+          - 'JPT 700'
+          - 'JPT 800'
+          - 'JLPT N4'
+          - 'JLPT N3'
+          - 'JLPT N2'
+          - 'JLPT N1'
+          - 'JLPT N0'
+          - '비즈니스 경어'
 
 jobs:
   send-japanese:
@@ -41,7 +54,8 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           EMAIL_RECIPIENTS: ${{ secrets.EMAIL_RECIPIENTS }}
-          FORCE_LEVEL: ${{ github.event.inputs.force_level }}
+          MANUAL_RUN: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
+          LEVEL_CHOICE: ${{ github.event.inputs.level }}
         run: python get_japanese.py
 
       - name: 결과 알림 이메일 발송
@@ -52,6 +66,8 @@ jobs:
           JOB_STATUS: ${{ job.status }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           RUN_NUMBER: ${{ github.run_number }}
+          MANUAL_RUN: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
+          LEVEL_CHOICE: ${{ github.event.inputs.level }}
         run: |
           python - <<'PYEOF'
           import os, smtplib, datetime
@@ -63,6 +79,11 @@ jobs:
           status = os.environ.get("JOB_STATUS", "unknown")
           url    = os.environ.get("RUN_URL", "")
           run_no = os.environ.get("RUN_NUMBER", "?")
+          manual = os.environ.get("MANUAL_RUN") == "1"
+          level  = os.environ.get("LEVEL_CHOICE", "")
+
+          # 수동 실행 시에는 hexartrion@gmail.com 으로만 전송
+          to_addr = "hexartrion@gmail.com" if manual else "kwonyh000@naver.com"
 
           now_kst  = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
           date_str = now_kst.strftime("%Y-%m-%d %H:%M KST")
@@ -71,12 +92,13 @@ jobs:
           icon       = "성공" if is_ok else "실패"
           result_msg = "PDF가 생성되어 이메일로 발송되었습니다." if is_ok else "실행 중 오류가 발생했습니다. 아래 링크에서 상세 로그를 확인해주세요."
 
-          subject = "[일본어 학습] " + icon + " - " + date_str
+          subject = ("[일본어 학습]" + (" [TEST]" if manual else "") + " "
+                     + icon + " - " + date_str)
 
           body = "\n".join([
               "안녕하세요!",
               "",
-              "오늘의 일본어 학습 자동화 결과입니다.",
+              ("※ 수동 실행(workflow_dispatch) 테스트입니다. 지정 레벨: " + (level or "자동")) if manual else "오늘의 일본어 학습 자동화 결과입니다.",
               "",
               "  실행 일시 : " + date_str,
               "  실행 번호 : #" + run_no,
@@ -93,7 +115,7 @@ jobs:
 
           msg = MIMEMultipart()
           msg["From"]    = gmail
-          msg["To"]      = "kwonyh000@naver.com"
+          msg["To"]      = to_addr
           msg["Subject"] = subject
           msg.attach(MIMEText(body, "plain", "utf-8"))
 
@@ -102,5 +124,5 @@ jobs:
               server.login(gmail, pw)
               server.send_message(msg)
 
-          print("알림 이메일 발송 완료 -> kwonyh000@naver.com (" + status + ")")
+          print("알림 이메일 발송 완료 -> " + to_addr + " (" + status + ")")
           PYEOF
