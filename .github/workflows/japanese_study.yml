@@ -121,12 +121,11 @@ jobs:
               "이 메일은 GitHub Actions에서 자동 발송됩니다.",
           ])
 
-          # 수동 실행: 테스트 정보 + 생성 로그를 본문에 첨부 (실패 시 부분 로그 포함)
-          if manual:
-              meta = _readf("run_meta.txt")
-              log  = _readf("run_log.txt")
-              body += "\n\n--- 테스트 정보 ---\n" + (meta or "(정보 없음 — 생성 실패 가능)")
-              body += "\n\n--- 생성 로그 ---\n" + (log or "(로그 없음)")
+          # 실행 정보 + 생성 로그를 본문에 첨부 (수동/스케줄 공통, 실패 시 부분 로그 포함)
+          meta = _readf("run_meta.txt")
+          log  = _readf("run_log.txt")
+          body += "\n\n--- 실행 정보 ---\n" + (meta or "(정보 없음 — 생성 실패 가능)")
+          body += "\n\n--- 생성 로그 ---\n" + (log or "(로그 없음)")
 
           msg = MIMEMultipart()
           msg["From"]    = gmail
