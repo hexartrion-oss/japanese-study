@@ -44,6 +44,18 @@ except ImportError:
 
 OUTPUT_PDF = os.path.join(os.path.dirname(__file__), "JPN.pdf")
 
+# ── 수동 실행(workflow_dispatch) 전용 설정 ─────────────
+# 아래 기능은 전부 수동 실행에서만 발동한다. 스케줄 실행은 기존 동작 그대로.
+MANUAL_RUN = os.environ.get("MANUAL_RUN") == "1"
+MANUAL_MAIL_TO = "hexartrion@gmail.com"  # 수동 실행 시 유일한 수신자
+
+RUN_LOG = []  # 수동 실행 메일 본문에 첨부할 생성 로그
+
+def _rlog(msg: str):
+    """콘솔 출력 + (수동 실행용) 메일 첨부 로그 축적."""
+    print(msg)
+    RUN_LOG.append(str(msg))
+
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Accept-Language": "ja,en;q=0.9",
@@ -592,7 +604,7 @@ def validate_sentences(sentences: list, label: str, keigo_doc: bool = False) -> 
         overused = _keigo_stock_overused(valid)
         if overused:
             detail = ", ".join(f"「{k}」×{n}" for k, n in overused)
-            print(f"[경고] 경어 상투구 과다: {detail} (상한 {_KEIGO_STOCK_LIMIT}회) — 재시도")
+            _rlog(f"[경고] 경어 상투구 과다: {detail} (상한 {_KEIGO_STOCK_LIMIT}회) — 재시도")
             return []
 
     return valid
@@ -602,7 +614,7 @@ def pick_topic(label: str) -> tuple:
     """N3/N4용 — 주제 풀에서 랜덤으로 주제 선택. (title, url) 형식 반환."""
     pool = _get_topic_pool(label)
     topic = random.choice(pool)
-    print(f"[주제 풀] 선택된 주제: {topic} (풀 크기: {len(pool)})")
+    _rlog(f"[주제 풀] 선택된 주제: {topic} (풀 크기: {len(pool)})")
     return topic, ""
 
 # ── N2 이상: NHK RSS 크롤링 ──────────────────────────
@@ -690,11 +702,26 @@ def _pick_adv_seed() -> tuple:
     _sg = random.choice(_SEED_ADV_GENRE)
     if _sg == _AB_GENRE:
         ab_stance = random.choice(_SEED_AB_STANCE)
-        print(f"[시드] A/B 대립 의견문 모드: {ab_stance}")
+        _rlog(f"[시드] A/B 대립 의견문 모드: {ab_stance}")
         return True, ab_stance, ""
     _sv = random.choice(_SEED_ADV_VIEW)
-    print(f"[시드] 장르: {_sg} / 관점: {_sv}")
+    _rlog(f"[시드] 장르: {_sg} / 관점: {_sv}")
     return False, "", f"・記事の種類：{_sg}\n・{_sv}"
+
+def _gemini_keigo_focus() -> list:
+    """수동 실행 전용: 고정 풀(_SEED_KEIGO_FOCUS) 대신 Gemini가
+    오늘의 경어 포커스 2종을 능동적으로 선정한다. 실패 시 빈 리스트(→고정 풀 폴백)."""
+    prompt = """あなたは日本語のビジネス敬語の専門家です。
+ビジネス文書・ビジネス会話で使われる敬語表現の中から、今日学習者が練習すべき敬語のカテゴリを2つ、あなた自身が自由に選んでください。
+
+・定番の表現（「申し上げます」「所存です」「いたします」等）以外の、幅広いレパートリーから選ぶこと
+・2つは互いに異なる種類にすること（尊敬語・謙譲語・丁重語・美化語・クッション言葉・ビジネス慣用句・改まり語 など）
+・出力は2行のみ。1行に1つ、「カテゴリ名（具体例1・具体例2・具体例3）」の形式で書くこと
+・説明・番号・記号・前置きは一切書かない"""
+    raw = _call_gemini(prompt, temperature=1.0, max_tokens=300)
+    lines = [l.strip("・-* 　") for l in raw.split("\n") if l.strip()]
+    lines = [l for l in lines if is_japanese(l)]
+    return lines[:2] if len(lines) >= 2 else []
 
 def write_story_with_gemini(theme: str, label: str, attempt: int = 0,
                             business_doc: bool = False) -> list:
@@ -715,11 +742,15 @@ def write_story_with_gemini(theme: str, label: str, attempt: int = 0,
         _sp = random.choice(_SEED_N4_PURPOSE)
         _se = random.choice(_SEED_N4_ENDING)
         seed_lines = f"・今日書く日記の種類：{_sp}\n・{_se}"
-        print(f"[시드] 서술: {_sp} / 마무리: {_se}")
+        _rlog(f"[시드] 서술: {_sp} / 마무리: {_se}")
     elif is_keigo:
         if business_doc:
             _sd = random.choice(_SEED_KEIGO_DOC)
-            _sf = random.sample(_SEED_KEIGO_FOCUS, 2)
+            _sf = _gemini_keigo_focus() if MANUAL_RUN else []
+            if _sf:
+                _rlog(f"[경어 포커스] Gemini 능동 선정: {_sf[0]} / {_sf[1]}")
+            else:
+                _sf = random.sample(_SEED_KEIGO_FOCUS, 2)
             seed_lines = (
                 f"・「{_sd}」の本文として書くこと"
                 f"（件名・宛名・挨拶・署名は書かない）\n"
@@ -727,14 +758,14 @@ def write_story_with_gemini(theme: str, label: str, attempt: int = 0,
                 f"　　1. {_sf[0]}\n"
                 f"　　2. {_sf[1]}"
             )
-            print(f"[시드] 경어 문서: {_sd} / 포커스: {_sf[0][:20]}... + {_sf[1][:20]}...")
+            _rlog(f"[시드] 경어 문서: {_sd} / 포커스: {_sf[0][:20]}... + {_sf[1][:20]}...")
         else:
             ab_mode, ab_stance, seed_lines = _pick_adv_seed()
     elif label in {"JLPT N3", "JPT 500"}:
         _sg = random.choice(_SEED_N3_GENRE)
         _sv = random.choice(_SEED_MID_VIEW)
         seed_lines = f"・記事の種類：{_sg}（だ・である調を維持すること）\n・{_sv}"
-        print(f"[시드] 장르: {_sg} / 관점: {_sv}")
+        _rlog(f"[시드] 장르: {_sg} / 관점: {_sv}")
     else:
         ab_mode, ab_stance, seed_lines = _pick_adv_seed()
 
@@ -873,11 +904,12 @@ def _retry_theme(label: str, tried_titles: set) -> str:
     tried_titles.add(new_theme)
     return new_theme
 
-def fetch_study_lines(label: str) -> tuple:
+def fetch_study_lines(label: str, force_business: bool = False) -> tuple:
     """
     N3/N4: 주제 풀 → 바로 문장 생성
     N2 이상: NHK RSS → 제목 선택 → 문장 생성
     Gemini 503/안전필터 차단 시 → 다른 주제로 재시도
+    force_business: 수동 실행 '비즈니스 경어' 선택 시 경어 문서 모드 강제
     """
     use_rss = label in RSS_LEVELS
     keigo_business = False
@@ -886,10 +918,11 @@ def fetch_study_lines(label: str) -> tuple:
     # JLPT N1/N0: 75% (BJT 대응 강화), JPT 800/900: 50%
     _bjt_levels = {"JLPT N1", "JLPT N0"}
     _keigo_threshold = 0.75 if label in _bjt_levels else 0.5
-    if label in KEIGO_LEVELS and random.random() < _keigo_threshold:
+    if label in KEIGO_LEVELS and (force_business or random.random() < _keigo_threshold):
         selected_title, selected_url = pick_topic(label)
         title_pairs = [(selected_title, selected_url)]
-        print(f"[경어 모드] 비즈니스 주제 강제 선택: {selected_title} (확률: {int(_keigo_threshold*100)}%)")
+        _how = "수동 강제" if force_business else f"확률 {int(_keigo_threshold*100)}%"
+        _rlog(f"[경어 모드] 비즈니스 주제 선택({_how}): {selected_title}")
         use_rss = False
         keigo_business = True
 
@@ -912,7 +945,7 @@ def fetch_study_lines(label: str) -> tuple:
         selected_title, selected_url = pick_topic(label)
         title_pairs = [(selected_title, selected_url)]
 
-    print(f"테마 확정: {selected_title}")
+    _rlog(f"테마 확정: {selected_title}")
 
     sentences = []
     tried_titles = {selected_title}
@@ -941,7 +974,7 @@ def fetch_study_lines(label: str) -> tuple:
         selected_url = ""
         if label in KEIGO_LEVELS:
             keigo_business = True
-        print(f"[재시도 {attempt + 1}/{_MAX_ATTEMPTS}] 새 주제: {selected_title}")
+        _rlog(f"[재시도 {attempt + 1}/{_MAX_ATTEMPTS}] 새 주제: {selected_title}")
 
     return selected_title, selected_url, sentences
 
@@ -1033,7 +1066,8 @@ def build_pdf(label: str, title: str, url: str,
     print(f"PDF saved: {OUTPUT_PDF} ({len(lines)} lines)")
 
 # ── 이메일 전송 ────────────────────────────────────────
-def send_email(date_str: str, label: str, mode: str):
+def send_email(date_str: str, label: str, mode: str,
+               level_choice: str = "", title: str = "", business: bool = False):
     if not GMAIL_ADDRESS or not GMAIL_APP_PW:
         print("Email credentials not set — skipping.")
         return
@@ -1044,19 +1078,37 @@ def send_email(date_str: str, label: str, mode: str):
         print(f"[오류] PDF 파일 없음: {OUTPUT_PDF} — 이메일 전송 건너뜀.")
         return
     try:
-        recipients = [GMAIL_ADDRESS]
-        for addr in re.split(r"[,;\s]+", EMAIL_RECIPIENTS):
-            addr = addr.strip()
-            if addr and addr not in recipients:
-                recipients.append(addr)
+        if MANUAL_RUN:
+            # 수동 실행: hexartrion@gmail.com 단독 수신
+            recipients = [MANUAL_MAIL_TO]
+        else:
+            recipients = [GMAIL_ADDRESS]
+            for addr in re.split(r"[,;\s]+", EMAIL_RECIPIENTS):
+                addr = addr.strip()
+                if addr and addr not in recipients:
+                    recipients.append(addr)
         msg = MIMEMultipart()
         msg["From"] = GMAIL_ADDRESS
         msg["To"] = ", ".join(recipients)
-        msg["Subject"] = f"[Japanese Study] {date_str} — {label}"
-        msg.attach(MIMEText(
-            f"Today's Japanese study material.\nLevel: {label}\nMode: {mode}",
-            "plain", "utf-8"
-        ))
+        _test_tag = " [TEST]" if MANUAL_RUN else ""
+        msg["Subject"] = f"[Japanese Study]{_test_tag} {date_str} — {label}"
+        if MANUAL_RUN:
+            lv_desc = LEVEL_DESC.get(label, {}).get("desc", label)
+            body = "\n".join([
+                "※ 본 메일은 수동 실행(workflow_dispatch) 테스트입니다.",
+                "",
+                f"지정 레벨    : {level_choice or '(자동 — 기존 로직)'}",
+                f"적용 레벨    : {label}",
+                f"세부 카테고리 : {lv_desc}",
+                f"모드         : {'비즈니스 경어' if business else mode}",
+                f"주제         : {title}",
+                "",
+                "--- 생성 로그 ---",
+                *RUN_LOG,
+            ])
+        else:
+            body = f"Today's Japanese study material.\nLevel: {label}\nMode: {mode}"
+        msg.attach(MIMEText(body, "plain", "utf-8"))
         with open(OUTPUT_PDF, "rb") as f:
             part = MIMEBase("application", "octet-stream")
             part.set_payload(f.read())
@@ -1088,8 +1140,20 @@ def main():
         week_label = f"Week {week_num} (JLPT)"
 
     force_level = os.environ.get("FORCE_LEVEL", "").strip()
+    level_choice = os.environ.get("LEVEL_CHOICE", "").strip()
     all_levels = JPT_PLAN + JLPT_PLAN
-    if force_level in all_levels:
+    force_business = False
+
+    if MANUAL_RUN and level_choice == "비즈니스 경어":
+        # 수동 실행: 경어 비즈니스 문서 모드 강제 (기준 레벨은 N1/N0 중 랜덤)
+        label = random.choice(["JLPT N1", "JLPT N0"])
+        force_business = True
+        _rlog(f"[수동 실행] 비즈니스 경어 모드 — 기준 레벨: {label}")
+    elif MANUAL_RUN and level_choice in all_levels:
+        # 수동 실행: 기존 로직 무시하고 지정 레벨 사용
+        label = level_choice
+        _rlog(f"[수동 실행] 레벨 지정: {label} (주간 로직 무시)")
+    elif force_level in all_levels:
         label = force_level
         print(f"[FORCE_LEVEL] {label} 강제 지정")
     else:
@@ -1097,7 +1161,7 @@ def main():
         label = pick_level(today)
     print(f"Today: {label} | {week_label}")
 
-    title, url, sentences = fetch_study_lines(label)
+    title, url, sentences = fetch_study_lines(label, force_business=force_business)
 
     if not sentences:
         raise RuntimeError(
@@ -1106,7 +1170,8 @@ def main():
 
     print(f"Lines validated: {len(sentences)}")
     build_pdf(label, title, url, sentences, date_str, week_label, mode)
-    send_email(date_str, label, mode)
+    send_email(date_str, label, mode,
+               level_choice=level_choice, title=title, business=force_business)
     print("Done!")
 
 if __name__ == "__main__":
