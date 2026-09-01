@@ -138,6 +138,14 @@ _SEED_KEIGO_DOC = [
     "業務の引き継ぎ文書",
     "社外向けプレゼンテーションの原稿",
 ]
+# 경어 모드: '오늘의 경어 포커스' (매일 2종 로테이션 — 所存です 등 상투구 편중 방지)
+_SEED_KEIGO_FOCUS = [
+    "尊敬語の特別動詞（おっしゃる・いらっしゃる・ご覧になる・お越しになる）",
+    "謙譲語の特別動詞（伺う・拝見する・承る・申し伝える・存じます）",
+    "お／ご＋授受表現（お目通しいただく・ご査収ください・お力添えいただく）",
+    "クッション言葉（恐れ入りますが・差し支えなければ・お手数をおかけしますが）",
+    "丁重語・改まり語（ございます・弊社・先般・後ほど・かねてより）",
+]
 
 # ── 조합식 주제 확장 부품 (내용 다양성: 풀 크기를 곱셈으로 확장) ──
 # N4: 장소(12) × 사건(6) = 72개 조합
@@ -512,10 +520,11 @@ def _merge_split_lines(lines: list) -> list:
         i += 1
     return merged
 
+_CONTINUATION_START = re.compile(
+    r"^(と|が|を|に|で|は|も|か|な|の|より|から|まで|として|について|によって|において)"
+)
+
 def _continuation_needed(current: str, next_line: str) -> bool:
-    _CONTINUATION_START = re.compile(
-        r"^(と|が|を|に|で|は|も|か|な|の|より|から|まで|として|について|によって|において)"
-    )
     if current and current[-1] == "、":
         return True
     if _CONTINUATION_START.match(next_line):
@@ -524,7 +533,20 @@ def _continuation_needed(current: str, next_line: str) -> bool:
         return True
     return False
 
-def validate_sentences(sentences: list, label: str) -> list:
+# 경어 상투구 게이트: 프롬프트 지시(2회まで)에 여유를 둔 상한 — 초과 시 재시도
+_KEIGO_STOCK_LIMIT = 3
+_KEIGO_STOCK_PHRASES = ["所存で", "申し上げます", "させていただき", "いたします", "てまいり"]
+
+def _keigo_stock_overused(sentences: list) -> list:
+    """상한 초과 상투구를 [(표현, 횟수)]로 반환. 비어 있으면 통과."""
+    text = "".join(sentences)
+    return [
+        (kw, text.count(kw))
+        for kw in _KEIGO_STOCK_PHRASES
+        if text.count(kw) > _KEIGO_STOCK_LIMIT
+    ]
+
+def validate_sentences(sentences: list, label: str, keigo_doc: bool = False) -> list:
     cleaned = []
     for line in sentences:
         line = sanitize_text(line.strip())
@@ -564,6 +586,13 @@ def validate_sentences(sentences: list, label: str) -> list:
         _bc = len([s for s in valid[_bi + 1:] if s not in _SECTION_HEADERS])
         if _ac < 8 or _bc < 8:
             print(f"[경고] A/B 분량 부족 (A:{_ac}문, B:{_bc}문) — 재시도")
+            return []
+
+    if keigo_doc:
+        overused = _keigo_stock_overused(valid)
+        if overused:
+            detail = ", ".join(f"「{k}」×{n}" for k, n in overused)
+            print(f"[경고] 경어 상투구 과다: {detail} (상한 {_KEIGO_STOCK_LIMIT}회) — 재시도")
             return []
 
     return valid
@@ -650,6 +679,23 @@ def select_title_with_gemini(title_pairs: list, label: str) -> tuple:
 # 보수적인 온도로 내려가 최종 전송 성공률을 보전한다.
 _TEMP_LADDER = [0.8, 0.6, 0.3, 0.1]
 
+# 논술체(だ・である) 공통 규칙 — 경어 레벨의 논술 모드와 N2/N3급이 공유 (중복 제거)
+_STYLE_RONJUTSU_RULES = """・常体（だ・である体）を基本としつつ、文末は「〜である」ばかりに偏らせず、「〜だ」「〜という」「〜とされる」「〜と言える」「〜ている」「〜のだ」なども自然に織り交ぜる（「〜である」を3文以上連続させない）
+・客観的な視点で事実・現状・背景を説明する論述文にすること
+・感情描写や登場人物の心理描写は禁止"""
+
+def _pick_adv_seed() -> tuple:
+    """상급(논술) 시드 선택. (ab_mode, ab_stance, seed_lines) 반환.
+    경어 레벨의 논술 모드와 N2급이 동일 로직을 공유한다 (중복 제거)."""
+    _sg = random.choice(_SEED_ADV_GENRE)
+    if _sg == _AB_GENRE:
+        ab_stance = random.choice(_SEED_AB_STANCE)
+        print(f"[시드] A/B 대립 의견문 모드: {ab_stance}")
+        return True, ab_stance, ""
+    _sv = random.choice(_SEED_ADV_VIEW)
+    print(f"[시드] 장르: {_sg} / 관점: {_sv}")
+    return False, "", f"・記事の種類：{_sg}\n・{_sv}"
+
 def write_story_with_gemini(theme: str, label: str, attempt: int = 0,
                             business_doc: bool = False) -> list:
     """주제로 Gemini가 지정 레벨 읽기 자료(20문장) 창작."""
@@ -673,36 +719,24 @@ def write_story_with_gemini(theme: str, label: str, attempt: int = 0,
     elif is_keigo:
         if business_doc:
             _sd = random.choice(_SEED_KEIGO_DOC)
+            _sf = random.sample(_SEED_KEIGO_FOCUS, 2)
             seed_lines = (
                 f"・「{_sd}」の本文として書くこと"
-                f"（件名・宛名・挨拶・署名は書かない）"
+                f"（件名・宛名・挨拶・署名は書かない）\n"
+                f"・今日の敬語フォーカス：次の2種類の敬語表現を本文の中で必ず自然に使うこと\n"
+                f"　　1. {_sf[0]}\n"
+                f"　　2. {_sf[1]}"
             )
-            print(f"[시드] 경어 문서: {_sd}")
+            print(f"[시드] 경어 문서: {_sd} / 포커스: {_sf[0][:20]}... + {_sf[1][:20]}...")
         else:
-            _sg = random.choice(_SEED_ADV_GENRE)
-            if _sg == _AB_GENRE:
-                ab_mode = True
-                ab_stance = random.choice(_SEED_AB_STANCE)
-                print(f"[시드] A/B 대립 의견문 모드: {ab_stance}")
-            else:
-                _sv = random.choice(_SEED_ADV_VIEW)
-                seed_lines = f"・記事の種類：{_sg}\n・{_sv}"
-                print(f"[시드] 장르: {_sg} / 관점: {_sv}")
+            ab_mode, ab_stance, seed_lines = _pick_adv_seed()
     elif label in {"JLPT N3", "JPT 500"}:
         _sg = random.choice(_SEED_N3_GENRE)
         _sv = random.choice(_SEED_MID_VIEW)
         seed_lines = f"・記事の種類：{_sg}（だ・である調を維持すること）\n・{_sv}"
         print(f"[시드] 장르: {_sg} / 관점: {_sv}")
     else:
-        _sg = random.choice(_SEED_ADV_GENRE)
-        if _sg == _AB_GENRE:
-            ab_mode = True
-            ab_stance = random.choice(_SEED_AB_STANCE)
-            print(f"[시드] A/B 대립 의견문 모드: {ab_stance}")
-        else:
-            _sv = random.choice(_SEED_ADV_VIEW)
-            seed_lines = f"・記事の種類：{_sg}\n・{_sv}"
-            print(f"[시드] 장르: {_sg} / 관점: {_sv}")
+        ab_mode, ab_stance, seed_lines = _pick_adv_seed()
 
     if is_beginner:
         style_instruction = """【文体】
@@ -712,31 +746,31 @@ def write_story_with_gemini(theme: str, label: str, attempt: int = 0,
 ・一続きの体験談として自然に流れる文章にすること"""
         scene_instruction = "に関する短いエッセイ（日記風）"
 
-    elif is_keigo:
-        # 4) 비즈니스 맥락이면 경어, 아니면 である 유지
+    elif is_keigo and business_doc:
+        # 비즈니스 문서 확정 → 경어 지시만 전송 (である 지시 혼재 제거)
         style_instruction = """【文体・敬語ルール】
-・テーマがビジネス・職場・取引・報告・依頼・会議など実務的な場面の場合：
-  　→ 尊敬語（「〜していただく」「〜なさる」「ご〜ください」等）・
-  　　 謙譲語（「〜いたします」「拝見する」「お伺いする」等）・
-  　　 丁寧語（「〜でございます」「〜ております」等）を自然に組み合わせて使うこと
-  　→ ビジネスメール・報告書・依頼文・議事録など実際の実務場面で使われる表現を中心にすること
-・テーマが社会問題・科学技術・政策など解説・論述的な場面の場合：
-  　→ 常体（だ・である体）を基本としつつ、文末は「〜である」ばかりに偏らせず、「〜だ」「〜という」「〜とされる」「〜と言える」「〜ている」「〜のだ」なども自然に織り交ぜる（「〜である」を3文以上連続させない）
-  　→ 客観的な視点で事実・現状・背景を説明する論述文にすること
-・いずれの場合も：
-  　→ 難解な四字熟語・文語体・古典語・日常では使わない専門語は使わない
-  　→ 宗教・信仰・スピリチュアルに関する表現は一切使わない
-  　→ 感情描写や登場人物の心理描写は禁止"""
-        scene_instruction = "に関する文章（ビジネス実務場面なら敬語、解説・論述場面ならである調）"
+・尊敬語（「〜していただく」「〜なさる」「ご〜ください」等）・
+  謙譲語（「〜いたします」「拝見する」「お伺いする」等）・
+  丁寧語（「〜でございます」「〜ております」等）を自然に組み合わせて使うこと
+・ビジネスメール・報告書・依頼文・議事録など実際の実務場面で使われる表現を中心にすること
+・文末表現の偏り禁止：「〜申し上げます」「〜所存です」「〜いたします」「〜させていただきます」「〜てまいります」など、同じ文末表現は文書全体で2回まで。同じ文末を2文連続で使わない
+・謙譲語だけに偏らず、読み手・相手の行為への尊敬語（ご覧になる・おっしゃる・お越しになる・ご確認なさる等）も3文以上で使うこと
+・感情描写や登場人物の心理描写は禁止"""
+        scene_instruction = "に関するビジネス文書（敬語を用いた実務文）"
+
+    elif is_keigo:
+        # 경어 레벨이지만 논술 주제(RSS 뉴스 등) → である 논술체
+        style_instruction = f"""【文体】
+{_STYLE_RONJUTSU_RULES}
+・難解な四字熟語・文語体・古典語・日常では使わない専門語は使わない"""
+        scene_instruction = "に関する解説記事・論説文（である調）"
 
     else:
         # N2 / N3 / JPT600 / JPT700
-        style_instruction = """【文体】
+        style_instruction = f"""【文体】
 ・新聞記事・解説記事・寄稿文など、外部に公表する文書形式で書く
 ・会話文（「〜」と言った／と述べた）は一切使わない
-・常体（だ・である体）を基本としつつ、文末は「〜である」ばかりに偏らせず、「〜だ」「〜という」「〜とされる」「〜と言える」「〜ている」「〜のだ」なども自然に織り交ぜる（「〜である」を3文以上連続させない）
-・客観的な視点で事実・現状・背景を説明する論述文にすること
-・感情描写や登場人物の心理描写は禁止"""
+{_STYLE_RONJUTSU_RULES}"""
         scene_instruction = "に関する解説記事・寄稿文"
 
     prompt = f"""あなたは日本語教師です。今から{lv['desc']}レベルの学習者向けに読み物を書きます。
@@ -831,6 +865,14 @@ def write_story_with_gemini(theme: str, label: str, attempt: int = 0,
     return raw_lines
 
 # ── 메인 흐름 ─────────────────────────────────────────
+def _retry_theme(label: str, tried_titles: set) -> str:
+    """재시도용 새 주제를 주제 풀에서 선택 (중복 회피). 호출부 2곳 공용."""
+    new_theme = random.choice(_get_topic_pool(label))
+    while new_theme in tried_titles and len(tried_titles) < 10:
+        new_theme = random.choice(_get_topic_pool(label))
+    tried_titles.add(new_theme)
+    return new_theme
+
 def fetch_study_lines(label: str) -> tuple:
     """
     N3/N4: 주제 풀 → 바로 문장 생성
@@ -880,36 +922,22 @@ def fetch_study_lines(label: str) -> tuple:
         raw_lines = write_story_with_gemini(selected_title, label, attempt=attempt,
                                             business_doc=keigo_business)
 
-        if not raw_lines:
+        if raw_lines:
+            sentences = validate_sentences(raw_lines, label, keigo_doc=keigo_business)
+            if sentences:
+                return selected_title, selected_url, sentences
+
+            if use_rss and len(title_pairs) > 1:
+                remaining = [(t, u) for t, u in title_pairs if t not in tried_titles]
+                if remaining:
+                    selected_title, selected_url = random.choice(remaining)
+                    tried_titles.add(selected_title)
+                    print(f"[안전필터 차단 의심] 새 제목으로 교체: {selected_title}")
+                    continue
+        else:
             print("[중단] Gemini 응답 없음 — 다른 주제로 재시도")
-            new_theme = random.choice(_get_topic_pool(label))
-            while new_theme in tried_titles and len(tried_titles) < 10:
-                new_theme = random.choice(_get_topic_pool(label))
-            tried_titles.add(new_theme)
-            selected_title = new_theme
-            selected_url = ""
-            if label in KEIGO_LEVELS:
-                keigo_business = True
-            print(f"[재시도 {attempt + 1}/{_MAX_ATTEMPTS}] 새 주제: {selected_title}")
-            continue
 
-        sentences = validate_sentences(raw_lines, label)
-        if sentences:
-            return selected_title, selected_url, sentences
-
-        if use_rss and len(title_pairs) > 1:
-            remaining = [(t, u) for t, u in title_pairs if t not in tried_titles]
-            if remaining:
-                selected_title, selected_url = random.choice(remaining)
-                tried_titles.add(selected_title)
-                print(f"[안전필터 차단 의심] 새 제목으로 교체: {selected_title}")
-                continue
-
-        new_theme = random.choice(_get_topic_pool(label))
-        while new_theme in tried_titles and len(tried_titles) < 10:
-            new_theme = random.choice(_get_topic_pool(label))
-        tried_titles.add(new_theme)
-        selected_title = new_theme
+        selected_title = _retry_theme(label, tried_titles)
         selected_url = ""
         if label in KEIGO_LEVELS:
             keigo_business = True
