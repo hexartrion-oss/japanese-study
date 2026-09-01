@@ -14,9 +14,12 @@ on:
         options:
           - '자동 (기존 로직)'
           - 'JPT 300'
+          - 'JPT 400'
           - 'JPT 500'
+          - 'JPT 600'
           - 'JPT 700'
           - 'JPT 800'
+          - 'JPT 900'
           - 'JLPT N4'
           - 'JLPT N3'
           - 'JLPT N2'
