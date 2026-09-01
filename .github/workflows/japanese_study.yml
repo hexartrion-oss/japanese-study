@@ -22,7 +22,8 @@ on:
           - 'JLPT N2'
           - 'JLPT N1'
           - 'JLPT N0'
-          - '비즈니스 경어'
+          - 'JLPT N1(경어)'
+          - 'JLPT N0(경어)'
 
 jobs:
   send-japanese:
@@ -82,8 +83,15 @@ jobs:
           manual = os.environ.get("MANUAL_RUN") == "1"
           level  = os.environ.get("LEVEL_CHOICE", "")
 
-          # 수동 실행 시에는 hexartrion@gmail.com 으로만 전송
-          to_addr = "hexartrion@gmail.com" if manual else "kwonyh000@naver.com"
+          # 결과 알림(로그 포함)은 항상 kwonyh000@naver.com 으로만 전송
+          to_addr = "kwonyh000@naver.com"
+
+          def _readf(path):
+              try:
+                  with open(path, encoding="utf-8") as f:
+                      return f.read().strip()
+              except OSError:
+                  return ""
 
           now_kst  = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
           date_str = now_kst.strftime("%Y-%m-%d %H:%M KST")
@@ -112,6 +120,13 @@ jobs:
               "---",
               "이 메일은 GitHub Actions에서 자동 발송됩니다.",
           ])
+
+          # 수동 실행: 테스트 정보 + 생성 로그를 본문에 첨부 (실패 시 부분 로그 포함)
+          if manual:
+              meta = _readf("run_meta.txt")
+              log  = _readf("run_log.txt")
+              body += "\n\n--- 테스트 정보 ---\n" + (meta or "(정보 없음 — 생성 실패 가능)")
+              body += "\n\n--- 생성 로그 ---\n" + (log or "(로그 없음)")
 
           msg = MIMEMultipart()
           msg["From"]    = gmail
