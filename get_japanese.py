@@ -31,6 +31,7 @@ GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS")
 GMAIL_APP_PW = os.environ.get("GMAIL_APP_PASSWORD")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 EMAIL_RECIPIENTS = os.environ.get("EMAIL_RECIPIENTS", "")
+MANUAL_MAIL_TO_ENV = os.environ.get("MANUAL_MAIL_TO", "")
 
 try:
     from dotenv import load_dotenv
@@ -39,6 +40,7 @@ try:
     GMAIL_APP_PW = GMAIL_APP_PW or os.getenv("GMAIL_APP_PASSWORD")
     GEMINI_API_KEY = GEMINI_API_KEY or os.getenv("GEMINI_API_KEY")
     EMAIL_RECIPIENTS = EMAIL_RECIPIENTS or os.getenv("EMAIL_RECIPIENTS", "")
+    MANUAL_MAIL_TO_ENV = MANUAL_MAIL_TO_ENV or os.getenv("MANUAL_MAIL_TO", "")
 except ImportError:
     pass
 
@@ -47,15 +49,15 @@ OUTPUT_PDF = os.path.join(os.path.dirname(__file__), "JPN.pdf")
 # ── 수동 실행(workflow_dispatch) 전용 설정 ─────────────
 # 아래 기능은 전부 수동 실행에서만 발동한다. 스케줄 실행은 기존 동작 그대로.
 MANUAL_RUN = os.environ.get("MANUAL_RUN") == "1"
-MANUAL_MAIL_TO = "hexartrion@gmail.com"  # 수동 실행 시 유일한 수신자
+MANUAL_MAIL_TO = MANUAL_MAIL_TO_ENV  # 수동 실행 시 유일한 수신자 (secrets.MANUAL_MAIL_TO)
 
-RUN_LOG = []  # 생성 로그 (파일로도 기록 → 알림 메일이 kwonyh000@naver.com에 첨부)
+RUN_LOG = []  # 생성 로그 (파일로도 기록 → 알림 메일에 첨부)
 RUN_LOG_FILE = os.path.join(os.path.dirname(__file__), "run_log.txt")
 RUN_META_FILE = os.path.join(os.path.dirname(__file__), "run_meta.txt")  # 테스트 정보 블록
 
 def _rlog(msg: str):
     """콘솔 출력 + 생성 로그 축적 + run_log.txt 기록.
-    로그는 결과 알림 메일(kwonyh000@naver.com)에서만 열람한다."""
+    로그는 결과 알림 메일에서만 열람한다."""
     print(msg)
     RUN_LOG.append(str(msg))
     try:
@@ -1276,9 +1278,12 @@ def send_email(date_str: str, label: str, mode: str):
     if not os.path.exists(OUTPUT_PDF):
         print(f"[오류] PDF 파일 없음: {OUTPUT_PDF} — 이메일 전송 건너뜀.")
         return
+    if MANUAL_RUN and not MANUAL_MAIL_TO:
+        print("[오류] MANUAL_MAIL_TO 미설정 — 수동 실행 이메일 전송 건너뜀.")
+        return
     try:
         if MANUAL_RUN:
-            # 수동 실행: hexartrion@gmail.com 단독 수신
+            # 수동 실행: secrets.MANUAL_MAIL_TO 단독 수신
             recipients = [MANUAL_MAIL_TO]
         else:
             recipients = [GMAIL_ADDRESS]
@@ -1292,7 +1297,7 @@ def send_email(date_str: str, label: str, mode: str):
         _test_tag = " [TEST]" if MANUAL_RUN else ""
         msg["Subject"] = f"[Japanese Study]{_test_tag} {date_str} — {label}"
         # 본문은 기존 형태 유지. 수동 실행 시 테스트 안내 한 줄만 추가
-        # (레벨·주제 상세와 생성 로그는 결과 알림 메일(kwonyh000@naver.com) 전용)
+        # (레벨·주제 상세와 생성 로그는 결과 알림 메일 전용)
         body = f"Today's Japanese study material.\nLevel: {label}\nMode: {mode}"
         if MANUAL_RUN:
             body += "\n이 메일은 테스트용 메일 입니다"
@@ -1373,7 +1378,7 @@ def main():
     mail_label = f"{label}[경어]" if keigo_business else label
     pdf_label = f"{label}[敬語]" if keigo_business else label
 
-    # 실행 정보 블록 기록 → 결과 알림 메일(kwonyh000@naver.com)에 첨부 (수동/스케줄 공통)
+    # 실행 정보 블록 기록 → 결과 알림 메일에 첨부 (수동/스케줄 공통)
     _desc = LEVEL_DESC.get(f"{label}(경어)" if keigo_business else label,
                            LEVEL_DESC.get(label, {})).get("desc", label)
     try:
