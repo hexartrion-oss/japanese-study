@@ -60,6 +60,7 @@ jobs:
           EMAIL_RECIPIENTS: ${{ secrets.EMAIL_RECIPIENTS }}
           MANUAL_RUN: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
           LEVEL_CHOICE: ${{ github.event.inputs.level }}
+          MANUAL_MAIL_TO: ${{ secrets.MANUAL_MAIL_TO }}
         run: python get_japanese.py
 
       - name: 결과 알림 이메일 발송
@@ -72,6 +73,7 @@ jobs:
           RUN_NUMBER: ${{ github.run_number }}
           MANUAL_RUN: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
           LEVEL_CHOICE: ${{ github.event.inputs.level }}
+          NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
         run: |
           python - <<'PYEOF'
           import os, smtplib, datetime
@@ -86,8 +88,8 @@ jobs:
           manual = os.environ.get("MANUAL_RUN") == "1"
           level  = os.environ.get("LEVEL_CHOICE", "")
 
-          # 결과 알림(로그 포함)은 항상 kwonyh000@naver.com 으로만 전송
-          to_addr = "kwonyh000@naver.com"
+          # 결과 알림(로그 포함)은 항상 NOTIFY_EMAIL(secrets)로만 전송
+          to_addr = os.environ["NOTIFY_EMAIL"]
 
           def _readf(path):
               try:
