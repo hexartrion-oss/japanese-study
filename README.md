@@ -50,6 +50,8 @@
 | `GMAIL_APP_PASSWORD` | Gmail 앱 비밀번호 |
 | `GEMINI_API_KEY` | Gemini API 키 |
 | `EMAIL_RECIPIENTS` | 스케줄 실행 시 추가 수신자(쉼표/공백 구분, 선택) |
+| `MANUAL_MAIL_TO` | 수동 실행 시 학습 자료 메일의 유일한 수신자 |
+| `NOTIFY_EMAIL` | 성공/실패 결과 알림 메일(로그 첨부)의 수신자 |
 
 ### 로컬 실행
 
@@ -64,5 +66,5 @@ get_japanese.py`로 실행 가능. 일본어 폰트가 필요하며, 자동 탐�
 ### 수동 실행 (workflow_dispatch)
 
 Actions 탭에서 레벨을 지정해 실행하면 그날의 자동 로직을 무시하고 지정
-레벨로 생성한다. 결과물은 `hexartrion@gmail.com`으로만 발송된다(테스트
+레벨로 생성한다. 결과물은 `MANUAL_MAIL_TO` secret 주소로만 발송된다(테스트
 격리 목적).

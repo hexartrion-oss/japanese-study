@@ -4,7 +4,7 @@
 
 ## 문제 발생 시 대응 절차
 
-워크플로우가 실패하면 `kwonyh000@naver.com`으로 결과 알림 메일이 오며,
+워크플로우가 실패하면 `NOTIFY_EMAIL` secret 주소로 결과 알림 메일이 오며,
 본문에 실행 정보(`run_meta.txt`)와 생성 로그(`run_log.txt`)가 첨부된다.
 이 로그의 마지막 `[경고]`/`[오류]` 메시지로 원인을 좁힌다.
 
@@ -35,6 +35,12 @@
   관련 Secrets(`GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`)가 비어 있거나
   플레이스홀더 값(10자 미만 또는 "입력" 포함)인 경우다. 리포지토리
   Secrets 설정을 확인한다.
+- **`[오류] MANUAL_MAIL_TO 미설정`** — 수동 실행인데 `MANUAL_MAIL_TO`
+  secret이 비어 있어 학습 자료 메일만 건너뛴 경우다(다른 단계는 정상
+  진행). secret 값을 등록한다.
+- **`[오류] NOTIFY_EMAIL 미설정`** — `NOTIFY_EMAIL` secret이 비어 있어
+  결과 알림 메일만 건너뛴 경우다(본 작업 성공/실패 자체에는 영향 없음).
+  secret 값을 등록한다.
 - **결과 알림 메일 자체가 오지 않음** — 워크플로우 실행이 아예 시작되지
   못한 경우(예: 스케줄 트리거 자체가 실패)다. Actions 탭에서 워크플로우
   실행 이력을 직접 확인해야 한다.
@@ -50,9 +56,9 @@
   전환) 근처의 정상 동작이다. `get_week_of_month` 계산이 의도한 주와
   일치하는지부터 확인한다.
 - **수동 실행 결과 메일이 안 옴** — 수동 실행 시 학습 자료 메일은
-  `hexartrion@gmail.com` 단독 수신(`MANUAL_MAIL_TO`)이다. 스팸함도
-  확인한다. 실패 여부는 항상 `kwonyh000@naver.com` 알림 메일로 확인
-  가능하다(`if: always()`).
+  `MANUAL_MAIL_TO` secret 주소 단독 수신이다. 스팸함도
+  확인한다. 실패 여부는 항상 `NOTIFY_EMAIL` secret 주소로 오는 알림
+  메일로 확인 가능하다(`if: always()`).
 
 ## 작업 지시서 작성 원칙
 
