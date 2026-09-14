@@ -31,6 +31,8 @@ on:
 jobs:
   send-japanese:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: 저장소 체크아웃
@@ -62,6 +64,19 @@ jobs:
           LEVEL_CHOICE: ${{ github.event.inputs.level }}
           MANUAL_MAIL_TO: ${{ secrets.MANUAL_MAIL_TO }}
         run: python get_japanese.py
+
+      - name: 학습 이력 커밋 (반복 회피용)
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain study_history.json 2>/dev/null)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add study_history.json
+            git commit -m "chore: update study_history.json"
+            git push || echo "[경고] 이력 커밋 push 실패 — 다음 실행에서 재시도됨"
+          else
+            echo "이력 변경 없음 — 커밋 건너뜀"
+          fi
 
       - name: 결과 알림 이메일 발송
         if: always()

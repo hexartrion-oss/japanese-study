@@ -1,6 +1,7 @@
 import os
 import re
 import sys
+import json
 import glob
 import time
 import random
@@ -45,6 +46,10 @@ except ImportError:
     pass
 
 OUTPUT_PDF = os.path.join(os.path.dirname(__file__), "JPN.pdf")
+# N1/N0 문법・관용표현 반복 회피용 이력 (리포에 커밋되어 영속). 최근 창문만 남기는
+# FIFO 큐 — 무엇을 "이미 배웠는지" 여부와 무관하게 최근 선정된 항목 자체를 기록한다.
+STUDY_HISTORY_FILE = os.path.join(os.path.dirname(__file__), "study_history.json")
+STUDY_HISTORY_WINDOW = 20
 
 # ── 수동 실행(workflow_dispatch) 전용 설정 ─────────────
 # 아래 기능은 전부 수동 실행에서만 발동한다. 스케줄 실행은 기존 동작 그대로.
@@ -801,12 +806,57 @@ def _focus_key(display: str) -> str:
     parts = [p for p in re.split(r"[ ・/／、]", core) if p]
     return max(parts, key=len) if parts else ""
 
+def _load_study_history() -> dict:
+    """최근 선정된 문법·관용표현 키를 리포에 커밋된 JSON에서 읽는다.
+    파일이 없거나 손상됐으면 빈 이력으로 시작(첫 실행/이력 유실에 안전)."""
+    try:
+        with open(STUDY_HISTORY_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        return {
+            "grammar": [str(x) for x in data.get("grammar", [])],
+            "idiom": [str(x) for x in data.get("idiom", [])],
+        }
+    except (OSError, ValueError):
+        return {"grammar": [], "idiom": []}
+
+def _record_study_history(study_focus: list):
+    """오늘 실제로 채택된 학습 항목을 이력에 추가하고 최근 윈도우만 남겨 저장.
+    실패해도 본 실행(PDF/메일 발송)에 영향 주지 않도록 예외를 삼킨다."""
+    if not study_focus:
+        return
+    hist = _load_study_history()
+    for kind, _, key in study_focus:
+        if not key:
+            continue
+        bucket = "grammar" if kind == "문법" else "idiom"
+        hist[bucket] = [k for k in hist[bucket] if k != key] + [key]
+        hist[bucket] = hist[bucket][-STUDY_HISTORY_WINDOW:]
+    try:
+        with open(STUDY_HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(hist, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+    except OSError as e:
+        print(f"[경고] 학습 이력 저장 실패: {e}")
+
+def _sample_avoiding_history(pool: list, n: int, recent_keys: list) -> list:
+    """이력에 없는 항목 우선 샘플링. 회피 가능한 후보가 부족하면(작은 폴백 풀이
+    최근 윈도우에 다 뒤덮인 경우) 회피를 포기하고 전체 풀에서 뽑는다."""
+    candidates = [x for x in pool if _focus_key(x) not in recent_keys]
+    if len(candidates) < n:
+        candidates = pool
+    return random.sample(candidates, min(n, len(candidates)))
+
 def _gemini_study_focus(business: bool, include_idiom: bool = True) -> list:
     """오늘의 학습 항목을 Gemini가 능동 선정. (종류, 표시문, 검증키) 리스트 반환.
     JLPT N1/N0: N1 문법 3 + 관용표현 2 / JPT 800·900: N1 문법 3만 (관용 제외 —
-    JPT는 관용표현을 배우는 용도가 아님). 실패 시 고정 풀 폴백."""
+    JPT는 관용표현을 배우는 용도가 아님). 실패 시 고정 풀 폴백.
+    직전까지 다룬 항목(최근 STUDY_HISTORY_WINDOW회)은 프롬프트에서 회피 지시하고,
+    폴백 샘플링에서도 우선 제외한다 — 특정 단어가 반복돼 새 어휘를 못 배우는 것을 막기 위함."""
+    hist = _load_study_history()
     idiom_kind = ("ビジネス文書・ビジネス会話でよく使われる慣用表現・決まり文句"
                   if business else "新聞・評論で使われる慣用句・比喩表現")
+    avoid_grammar = "、".join(hist["grammar"])
+    avoid_idiom = "、".join(hist["idiom"]) if include_idiom else ""
     if include_idiom:
         items_part = f"""1. JLPT N1レベルの文法パターンを3つ（定番に偏らず、毎回異なる組み合わせになるよう幅広いレパートリーから選ぶ）
 2. {idiom_kind}を2つ
@@ -822,10 +872,16 @@ def _gemini_study_focus(business: bool, include_idiom: bool = True) -> list:
 【出力形式 — 厳守】
 ・合計3行のみ。1行に1項目
 ・「文法：パターン（短い意味）」の形式"""
+    avoid_part = ""
+    if avoid_grammar:
+        avoid_part += f"・文法は直近で既に扱った次の項目と同じものを選ばないこと：{avoid_grammar}\n"
+    if avoid_idiom:
+        avoid_part += f"・慣用表現は直近で既に扱った次の項目と同じものを選ばないこと：{avoid_idiom}\n"
     prompt = f"""あなたは日本語教育の専門家です。今日の読み物に組み込む学習項目を、あなた自身が自由に選んでください。
+学習者が毎回新しい語彙・表現に触れられるよう、同じ項目の繰り返しを避けることが重要です。
 
 {items_part}
-・説明・番号・前置きは一切書かない"""
+{avoid_part}・説明・番号・前置きは一切書かない"""
     raw = _call_gemini(prompt, temperature=1.0, max_tokens=400)
     grammar, idiom = [], []
     for l in (x.strip("・-* 　") for x in raw.split("\n") if x.strip()):
@@ -834,9 +890,10 @@ def _gemini_study_focus(business: bool, include_idiom: bool = True) -> list:
         elif include_idiom and l.startswith("慣用：") and len(idiom) < 2:
             idiom.append(l[len("慣用："):].strip())
     if len(grammar) < 3 or (include_idiom and len(idiom) < 2):
-        grammar = random.sample(_SEED_N1_GRAMMAR, 3)
-        idiom = random.sample(_SEED_BIZ_IDIOM if business else _SEED_IDIOM, 2) if include_idiom else []
-        _rlog("[학습 포커스] Gemini 선정 실패 → 고정 풀 폴백")
+        grammar = _sample_avoiding_history(_SEED_N1_GRAMMAR, 3, hist["grammar"])
+        idiom = (_sample_avoiding_history(_SEED_BIZ_IDIOM if business else _SEED_IDIOM, 2, hist["idiom"])
+                 if include_idiom else [])
+        _rlog("[학습 포커스] Gemini 선정 실패 → 고정 풀 폴백(이력 회피 적용)")
     focus = ([("문법", g, _focus_key(g)) for g in grammar]
              + [("관용", i, _focus_key(i)) for i in idiom])
     _rlog("[학습 포커스] " + " / ".join(f"{k}:{d.split('（')[0]}" for k, d, _ in focus))
@@ -1147,6 +1204,10 @@ def fetch_study_lines(label: str, force_business: bool = False) -> tuple:
                     _rlog(f"[학습 포커스] 사용 {used}/{len(study_focus)}"
                           + (f" (누락: {', '.join(missing)})" if missing else " — 전부 사용"))
             if sentences:
+                if study_focus:
+                    text = "".join(sentences)
+                    used_focus = [item for item in study_focus if item[2] and item[2] in text]
+                    _record_study_history(used_focus)
                 return selected_title, selected_url, sentences, keigo_business
 
             if use_rss and len(title_pairs) > 1:
