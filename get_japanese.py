@@ -50,6 +50,11 @@ OUTPUT_PDF = os.path.join(os.path.dirname(__file__), "JPN.pdf")
 # FIFO 큐 — 무엇을 "이미 배웠는지" 여부와 무관하게 최근 선정된 항목 자체를 기록한다.
 STUDY_HISTORY_FILE = os.path.join(os.path.dirname(__file__), "study_history.json")
 STUDY_HISTORY_WINDOW = 20
+# 본문 문장 끝맺음 상투구(喫緊の課題である 등) 반복 회피용 — 최근 ENDING_PHRASE_WINDOW회 중
+# ENDING_PHRASE_MIN_RUNS회 이상 등장한 끝맺음은 다음 생성에서 회피 지시한다.
+ENDING_PHRASE_LEN = 8
+ENDING_PHRASE_WINDOW = 10
+ENDING_PHRASE_MIN_RUNS = 3
 
 # ── 수동 실행(workflow_dispatch) 전용 설정 ─────────────
 # 아래 기능은 전부 수동 실행에서만 발동한다. 스케줄 실행은 기존 동작 그대로.
@@ -807,30 +812,56 @@ def _focus_key(display: str) -> str:
     return max(parts, key=len) if parts else ""
 
 def _load_study_history() -> dict:
-    """최근 선정된 문법·관용표현 키를 리포에 커밋된 JSON에서 읽는다.
-    파일이 없거나 손상됐으면 빈 이력으로 시작(첫 실행/이력 유실에 안전)."""
+    """최근 선정된 문법·관용표현 키, 최근 실행별 문장 끝맺음 구절을 리포에
+    커밋된 JSON에서 읽는다. 파일이 없거나 손상됐으면 빈 이력으로 시작
+    (첫 실행/이력 유실에 안전)."""
     try:
         with open(STUDY_HISTORY_FILE, encoding="utf-8") as f:
             data = json.load(f)
         return {
             "grammar": [str(x) for x in data.get("grammar", [])],
             "idiom": [str(x) for x in data.get("idiom", [])],
+            "ending_phrases": [[str(p) for p in run] for run in data.get("ending_phrases", [])],
         }
     except (OSError, ValueError):
-        return {"grammar": [], "idiom": []}
+        return {"grammar": [], "idiom": [], "ending_phrases": []}
 
-def _record_study_history(study_focus: list):
-    """오늘 실제로 채택된 학습 항목을 이력에 추가하고 최근 윈도우만 남겨 저장.
-    실패해도 본 실행(PDF/메일 발송)에 영향 주지 않도록 예외를 삼킨다."""
-    if not study_focus:
-        return
+def _extract_ending_phrases(sentences: list) -> list:
+    """문장별 끝맺음 마지막 ENDING_PHRASE_LEN자(종결부호 제외)를 추출.
+    형태소 분석 없이 상투적 문말 표현(예: '喫緊の課題である') 반복을 감지하기 위한
+    문자 단위 근사치 — 짧은 문장은 제외, 실행 내 중복은 제거."""
+    phrases = []
+    for s in sentences:
+        if s in _SECTION_HEADERS:
+            continue
+        core = s.rstrip("。！？」』）")
+        if len(core) >= ENDING_PHRASE_LEN:
+            phrases.append(core[-ENDING_PHRASE_LEN:])
+    return list(dict.fromkeys(phrases))
+
+def _overused_ending_phrases(hist: dict) -> list:
+    """최근 ENDING_PHRASE_WINDOW회 실행 중 ENDING_PHRASE_MIN_RUNS회 이상 등장한
+    문말 표현 목록. 실행 1회당 1표만 세도록(실행 내 중복 제거는 추출 단계에서 이미 처리)."""
+    counts = {}
+    for run_phrases in hist.get("ending_phrases", []):
+        for p in set(run_phrases):
+            counts[p] = counts.get(p, 0) + 1
+    return [p for p, c in counts.items() if c >= ENDING_PHRASE_MIN_RUNS]
+
+def _record_generation_history(study_focus: list, sentences: list):
+    """오늘 실제로 채택된 학습 항목과 문장 끝맺음 구절을 이력에 반영하고
+    각각 최근 윈도우만 남겨 저장. 실패해도 본 실행(PDF/메일 발송)에 영향
+    주지 않도록 예외를 삼킨다."""
     hist = _load_study_history()
-    for kind, _, key in study_focus:
+    for kind, _, key in (study_focus or []):
         if not key:
             continue
         bucket = "grammar" if kind == "문법" else "idiom"
         hist[bucket] = [k for k in hist[bucket] if k != key] + [key]
         hist[bucket] = hist[bucket][-STUDY_HISTORY_WINDOW:]
+    ending_phrases = _extract_ending_phrases(sentences)
+    if ending_phrases:
+        hist["ending_phrases"] = (hist["ending_phrases"] + [ending_phrases])[-ENDING_PHRASE_WINDOW:]
     try:
         with open(STUDY_HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(hist, f, ensure_ascii=False, indent=2)
@@ -1078,18 +1109,28 @@ def write_story_with_gemini(theme: str, label: str, attempt: int = 0,
 
 今すぐ書いてください："""
 
-    # 학습 포커스(N1급): 문법·관용표현 사용 지시를 두 프롬프트(일반/AB) 공통 삽입
+    # 학습 포커스(N1급): 문법·관용표현 사용 지시 + 문말 상투구 회피 지시를
+    # 두 프롬프트(일반/AB) 공통으로 삽입
+    extra_block = ""
     if study_focus:
         _g = [d for k, d, _ in study_focus if k == "문법"]
         _i = [d for k, d, _ in study_focus if k == "관용"]
-        focus_block = "【今日の学習項目 — 本文に必ず織り込むこと】\n"
+        extra_block += "【今日の学習項目 — 本文に必ず織り込むこと】\n"
         if _g:
-            focus_block += ("・次のN1文法パターンをそれぞれ1回以上、自然な文脈で使うこと\n"
+            extra_block += ("・次のN1文法パターンをそれぞれ1回以上、自然な文脈で使うこと\n"
                             + "".join(f"　　・{x}\n" for x in _g))
         if _i:
-            focus_block += ("・次の慣用表現をそれぞれ1回以上、自然な文脈で使うこと\n"
+            extra_block += ("・次の慣用表現をそれぞれ1回以上、自然な文脈で使うこと\n"
                             + "".join(f"　　・{x}\n" for x in _i))
-        prompt = prompt.replace("【出力ルール", focus_block + "\n【出力ルール")
+    avoid_endings = _overused_ending_phrases(_load_study_history())
+    if avoid_endings:
+        _rlog(f"[문말 회피] 최근 {ENDING_PHRASE_MIN_RUNS}회 이상 반복된 표현 회피 지시: "
+              + "、".join(avoid_endings))
+        extra_block += ("【文末表現の回避 — 直近で繰り返し使われたため使用禁止】\n"
+                        "・次の言い回しで文を終えないこと（他の自然な表現に言い換える）：\n"
+                        + "".join(f"　　・{p}\n" for p in avoid_endings))
+    if extra_block:
+        prompt = prompt.replace("【出力ルール", extra_block + "\n【出力ルール")
 
     temp = _TEMP_LADDER[min(attempt, len(_TEMP_LADDER) - 1)]
     print(f"[온도 사다리] attempt {attempt + 1} → temperature={temp}")
@@ -1204,10 +1245,11 @@ def fetch_study_lines(label: str, force_business: bool = False) -> tuple:
                     _rlog(f"[학습 포커스] 사용 {used}/{len(study_focus)}"
                           + (f" (누락: {', '.join(missing)})" if missing else " — 전부 사용"))
             if sentences:
+                used_focus = []
                 if study_focus:
                     text = "".join(sentences)
                     used_focus = [item for item in study_focus if item[2] and item[2] in text]
-                    _record_study_history(used_focus)
+                _record_generation_history(used_focus, sentences)
                 return selected_title, selected_url, sentences, keigo_business
 
             if use_rss and len(title_pairs) > 1:
