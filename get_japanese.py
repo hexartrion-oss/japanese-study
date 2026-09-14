@@ -628,7 +628,11 @@ def validate_sentences(sentences: list, label: str, keigo_doc: bool = False) -> 
     cleaned = []
     for line in sentences:
         line = sanitize_text(line.strip())
-        line = re.sub(r"^[\d\.\-・\*\①-⑩\s]+", "", line).strip()
+        # Gemini가 붙이는 목록 번호("1. ", "2) ", "・", "①" 등)만 제거한다.
+        # 숫자만으로 무조건 잘라내면 "2024年1月"처럼 문장 내용에 포함된
+        # 연도·수치까지 번호로 오인해 삭제해버리므로, 번호 뒤에 구분자
+        # (마침표・닫는괄호・쉼표)가 붙어 있을 때만 목록 번호로 간주한다.
+        line = re.sub(r"^(?:\d{1,2}[\.\)、]|[①-⑩]|[・\-\*])\s*", "", line).strip()
         if not line or not is_japanese(line):
             continue
         cleaned.append(line)
