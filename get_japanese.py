@@ -752,6 +752,15 @@ _STYLE_RONJUTSU_RULES = """・常体（だ・である体）を基本としつ�
 ・客観的な視点で事実・現状・背景を説明する論述文にすること
 ・感情描写や登場人物の心理描写は禁止"""
 
+# ことわざ・격언(교훈적 상투구) 금지 — 관용구(拍車をかける 등 비유적 표현)는 별개이며 금지 대상이 아니다.
+# 이전에는 비즈니스 경어 문서(_NO_FILLER_RULE)에만 적용됐으나, 무표기 N0/N1 논술문·N2/N3
+# 해설기사도 20문장 채우기용 속담·격언 사설이 섞일 수 있어 논술체 공통 규칙으로 승격했다.
+_NO_PROVERB_RULE = (
+    "・テーマと直接関係のないことわざ・格言・一般論・精神論（「〜は企業の顔」"
+    "「一事が万事」「情けは人のためならず」等、教訓を述べるだけの決まり文句）は一切書かない。"
+    "ただし、テーマの説明に自然に使う比喩的な慣用句（「拍車をかける」「軌道に乗る」等）は禁止ではない"
+)
+
 def _pick_adv_seed() -> tuple:
     """상급(논술) 시드 선택. (ab_mode, ab_stance, seed_lines) 반환.
     경어 레벨의 논술 모드와 N2급이 동일 로직을 공유한다 (중복 제거)."""
@@ -797,6 +806,8 @@ def _gemini_study_focus(business: bool, include_idiom: bool = True) -> list:
     if include_idiom:
         items_part = f"""1. JLPT N1レベルの文法パターンを3つ（定番に偏らず、毎回異なる組み合わせになるよう幅広いレパートリーから選ぶ）
 2. {idiom_kind}を2つ
+　　（教訓・処世訓を述べることわざ・格言「情けは人のためならず」等は選ばないこと。
+　　比喩的な言い回しである慣用句・慣用表現に限る）
 
 【出力形式 — 厳守】
 ・合計5行のみ。1行に1項目
@@ -898,8 +909,7 @@ def write_story_with_gemini(theme: str, label: str, attempt: int = 0,
         # 비즈니스 문서 확정 → 경어 지시만 전송 (である 지시 혼재 제거)
         # 목적과 무관한 격언・일반론・인물 평가는 사내/사외 공통으로 금지 (20문장 채우기용 사설 방지)
         _NO_FILLER_RULE = (
-            "・文書の目的に直接関係のないことわざ・格言・一般論・精神論（「〜は企業の顔」"
-            "「一事が万事」「情けは人のためならず」等）は一切書かない\n"
+            f"{_NO_PROVERB_RULE}\n"
             "・登場人物（自社・他社を問わない）の体調・勤務態度・人柄への評価的な感想は書かない"
         )
         if doc_kind == "internal":
@@ -933,7 +943,8 @@ def write_story_with_gemini(theme: str, label: str, attempt: int = 0,
         # 경어 레벨이지만 논술 주제(RSS 뉴스 등) → である 논술체
         style_instruction = f"""【文体】
 {_STYLE_RONJUTSU_RULES}
-・難解な四字熟語・文語体・古典語・日常では使わない専門語は使わない"""
+・難解な四字熟語・文語体・古典語・日常では使わない専門語は使わない
+{_NO_PROVERB_RULE}"""
         scene_instruction = "に関する解説記事・論説文（である調）"
 
     else:
@@ -941,7 +952,8 @@ def write_story_with_gemini(theme: str, label: str, attempt: int = 0,
         style_instruction = f"""【文体】
 ・新聞記事・解説記事・寄稿文など、外部に公表する文書形式で書く
 ・会話文（「〜」と言った／と述べた）は一切使わない
-{_STYLE_RONJUTSU_RULES}"""
+{_STYLE_RONJUTSU_RULES}
+{_NO_PROVERB_RULE}"""
         scene_instruction = "に関する解説記事・寄稿文"
 
     prompt = f"""あなたは日本語教師です。今から{lv['desc']}レベルの学習者向けに読み物を書きます。
