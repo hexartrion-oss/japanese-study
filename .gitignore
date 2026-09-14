@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.env
+JPN.pdf
+run_log.txt
+run_meta.txt
