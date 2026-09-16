@@ -455,59 +455,72 @@ def _get_topic_pool(label: str) -> list:
 # 2.5세대를 우선 유지하고, 마지막 폴백만 3세대(3.5)로 전환.
 _GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.5-flash"]
 
-def _call_gemini(prompt: str, temperature: float = 0.1, max_tokens: int = 1024) -> str:
-    """quota/503 오류 시 대기 후 재시도, 모델 폴백 포함."""
-    if not GEMINI_AVAILABLE or not GEMINI_API_KEY:
-        return ""
-    client = google_genai.Client(api_key=GEMINI_API_KEY)
-    for model_id in _GEMINI_MODELS:
-        print(f"[Gemini] 모델 시도: {model_id}")
-        for attempt in range(2):
-            try:
-                config_kwargs = {
-                    "temperature": temperature,
-                    "max_output_tokens": max_tokens,
-                }
-                # gemini-2.5 계열은 thinking 토큰이 max_output_tokens를 소모해
-                # 응답이 절단(5~7줄)되므로 thinking을 비활성화
-                if "2.5" in model_id:
-                    config_kwargs["thinking_config"] = genai_types.ThinkingConfig(
-                        thinking_budget=0
+class GeminiClient:
+    """Gemini 호출 의존성. 모델 목록·재시도 정책을 바꿀 때는 호출부 함수 본문을
+    고치는 대신 이 클래스를 교체(또는 다른 구현을 주입)한다."""
+
+    def __init__(self, api_key: str = None, models: list = None):
+        self.api_key = GEMINI_API_KEY if api_key is None else api_key
+        self.models = list(models) if models else list(_GEMINI_MODELS)
+
+    @property
+    def available(self) -> bool:
+        """SDK 미설치·키 미설정 시 False — 호출부의 조기 반환 판단에 사용."""
+        return bool(GEMINI_AVAILABLE and self.api_key)
+
+    def generate(self, prompt: str, temperature: float = 0.1, max_tokens: int = 1024) -> str:
+        """quota/503 오류 시 대기 후 재시도, 모델 폴백 포함."""
+        if not self.available:
+            return ""
+        client = google_genai.Client(api_key=self.api_key)
+        for model_id in self.models:
+            print(f"[Gemini] 모델 시도: {model_id}")
+            for attempt in range(2):
+                try:
+                    config_kwargs = {
+                        "temperature": temperature,
+                        "max_output_tokens": max_tokens,
+                    }
+                    # gemini-2.5 계열은 thinking 토큰이 max_output_tokens를 소모해
+                    # 응답이 절단(5~7줄)되므로 thinking을 비활성화
+                    if "2.5" in model_id:
+                        config_kwargs["thinking_config"] = genai_types.ThinkingConfig(
+                            thinking_budget=0
+                        )
+                    response = client.models.generate_content(
+                        model=model_id,
+                        contents=prompt,
+                        config=genai_types.GenerateContentConfig(**config_kwargs),
                     )
-                response = client.models.generate_content(
-                    model=model_id,
-                    contents=prompt,
-                    config=genai_types.GenerateContentConfig(**config_kwargs),
-                )
-                return response.text or ""
-            except Exception as e:
-                err = str(e)
-                is_quota = "429" in err or "quota" in err.lower()
-                if is_quota and attempt == 0:
-                    m = re.search(r"retry in (\d+(?:\.\d+)?)", err)
-                    wait = int(float(m.group(1))) + 5 if m else 60
-                    print(f"[Gemini] {model_id} 한도 초과. {wait}초 대기 후 재시도...")
-                    time.sleep(wait)
-                    continue
-                if is_quota:
-                    print(f"[Gemini] {model_id} 재시도 실패 → 10초 후 다음 모델로 전환")
-                    time.sleep(10)
+                    return response.text or ""
+                except Exception as e:
+                    err = str(e)
+                    is_quota = "429" in err or "quota" in err.lower()
+                    if is_quota and attempt == 0:
+                        m = re.search(r"retry in (\d+(?:\.\d+)?)", err)
+                        wait = int(float(m.group(1))) + 5 if m else 60
+                        print(f"[Gemini] {model_id} 한도 초과. {wait}초 대기 후 재시도...")
+                        time.sleep(wait)
+                        continue
+                    if is_quota:
+                        print(f"[Gemini] {model_id} 재시도 실패 → 10초 후 다음 모델로 전환")
+                        time.sleep(10)
+                        break
+                    is_unavailable = "503" in err or "UNAVAILABLE" in err
+                    if is_unavailable and attempt == 0:
+                        print(f"[Gemini] {model_id} 서버 과부하(503). 30초 대기 후 재시도...")
+                        time.sleep(30)
+                        continue
+                    if is_unavailable:
+                        print(f"[Gemini] {model_id} 503 재시도 실패 → 다음 모델로 전환")
+                        time.sleep(10)
+                        break
+                    # 429/503이 아닌 오류(예: 404 — 모델 폐기/미지원)는 이 모델만 포기하고
+                    # 즉시 끝내지 말고 폴백 리스트의 다음 모델로 넘어간다.
+                    print(f"[Gemini] {model_id} API 오류(폴백 전환): {e}")
                     break
-                is_unavailable = "503" in err or "UNAVAILABLE" in err
-                if is_unavailable and attempt == 0:
-                    print(f"[Gemini] {model_id} 서버 과부하(503). 30초 대기 후 재시도...")
-                    time.sleep(30)
-                    continue
-                if is_unavailable:
-                    print(f"[Gemini] {model_id} 503 재시도 실패 → 다음 모델로 전환")
-                    time.sleep(10)
-                    break
-                # 429/503이 아닌 오류(예: 404 — 모델 폐기/미지원)는 이 모델만 포기하고
-                # 즉시 함수를 끝내지 말고 폴백 리스트의 다음 모델로 넘어간다.
-                print(f"[Gemini] {model_id} API 오류(폴백 전환): {e}")
-                break
-    print("[Gemini] 모든 모델 실패")
-    return ""
+        print("[Gemini] 모든 모델 실패")
+        return ""
 
 # ── 폰트 탐색 ─────────────────────────────────────────
 def find_font() -> str:
@@ -688,45 +701,54 @@ def pick_topic(label: str) -> tuple:
     return topic, ""
 
 # ── N2 이상: NHK RSS 크롤링 ──────────────────────────
-def crawl_titles(count: int = 10) -> list:
-    """NHK RSS에서 뉴스 제목 수집. 차단 키워드 포함 제목은 미리 제거."""
-    collected = []
-    rss_urls = NHK_RSS_LIST[:]
-    random.shuffle(rss_urls)
-    for rss_url in rss_urls:
-        if len(collected) >= count:
-            break
-        try:
-            r = requests.get(rss_url, headers=HEADERS, timeout=15)
-            r.raise_for_status()
-            soup = BeautifulSoup(r.text, "xml")
-            items = soup.find_all("item")
-            random.shuffle(items)
-            for item in items:
-                t = item.find("title")
-                l = item.find("link")
-                if not t or not l:
-                    continue
-                title = t.text.strip()
-                url = l.text.strip()
-                if not is_japanese(title):
-                    continue
-                if has_block_keyword(title):
-                    print(f"[RSS 필터] 차단 키워드 포함 제목 제외: {title}")
-                    continue
-                collected.append((title, url))
-                if len(collected) >= count:
-                    break
-        except Exception as e:
-            print(f"RSS crawl failed ({rss_url}): {e}")
-    print(f"RSS 수집 완료: {len(collected)}개")
-    return collected
+class NewsSource:
+    """뉴스 제목 수집 의존성. 피드 목록·필터·수집 방식을 바꿀 때는 호출부를
+    고치는 대신 이 클래스를 교체(또는 다른 구현을 주입)한다."""
 
-def select_title_with_gemini(title_pairs: list, label: str) -> tuple:
+    def __init__(self, feeds: list = None, headers: dict = None, timeout: int = 15):
+        self.feeds = list(feeds) if feeds else list(NHK_RSS_LIST)
+        self.headers = dict(headers) if headers else dict(HEADERS)
+        self.timeout = timeout
+
+    def fetch_titles(self, count: int = 10) -> list:
+        """RSS에서 뉴스 제목 수집. 차단 키워드 포함 제목은 미리 제거."""
+        collected = []
+        rss_urls = self.feeds[:]
+        random.shuffle(rss_urls)
+        for rss_url in rss_urls:
+            if len(collected) >= count:
+                break
+            try:
+                r = requests.get(rss_url, headers=self.headers, timeout=self.timeout)
+                r.raise_for_status()
+                soup = BeautifulSoup(r.text, "xml")
+                items = soup.find_all("item")
+                random.shuffle(items)
+                for item in items:
+                    t = item.find("title")
+                    l = item.find("link")
+                    if not t or not l:
+                        continue
+                    title = t.text.strip()
+                    url = l.text.strip()
+                    if not is_japanese(title):
+                        continue
+                    if has_block_keyword(title):
+                        print(f"[RSS 필터] 차단 키워드 포함 제목 제외: {title}")
+                        continue
+                    collected.append((title, url))
+                    if len(collected) >= count:
+                        break
+            except Exception as e:
+                print(f"RSS crawl failed ({rss_url}): {e}")
+        print(f"RSS 수집 완료: {len(collected)}개")
+        return collected
+
+def select_title_with_gemini(title_pairs: list, label: str, gemini: GeminiClient) -> tuple:
     """수집된 제목 중 레벨에 맞는 제목 1개를 Gemini가 선택."""
     if len(title_pairs) == 1:
         return title_pairs[0]
-    if not GEMINI_AVAILABLE or not GEMINI_API_KEY:
+    if not gemini.available:
         return random.choice(title_pairs) if title_pairs else ("今日のニュース", "")
 
     lv = LEVEL_DESC.get(label, LEVEL_DESC["JLPT N2"])
@@ -746,7 +768,7 @@ def select_title_with_gemini(title_pairs: list, label: str) -> tuple:
 ・{lv['desc']}レベルに合わない難解な専門語を含むタイトルは選ばないこと
 ・選んだタイトルの番号だけを答えてください（例：3）"""
 
-    answer = _call_gemini(prompt, temperature=0.0, max_tokens=10)
+    answer = gemini.generate(prompt, temperature=0.0, max_tokens=10)
     match = re.search(r"\d+", answer)
     if match:
         idx = int(match.group()) - 1
@@ -787,7 +809,7 @@ def _pick_adv_seed() -> tuple:
     _rlog(f"[시드] 장르: {_sg} / 관점: {_sv}")
     return False, "", f"・記事の種類：{_sg}\n・{_sv}"
 
-def _gemini_keigo_focus() -> list:
+def _gemini_keigo_focus(gemini: GeminiClient) -> list:
     """수동 실행 전용: 고정 풀(_SEED_KEIGO_FOCUS) 대신 Gemini가
     오늘의 경어 포커스 2종을 능동적으로 선정한다. 실패 시 빈 리스트(→고정 풀 폴백)."""
     prompt = """あなたは日本語のビジネス敬語の専門家です。
@@ -797,7 +819,7 @@ def _gemini_keigo_focus() -> list:
 ・2つは互いに異なる種類にすること（尊敬語・謙譲語・丁重語・美化語・クッション言葉・ビジネス慣用句・改まり語 など）
 ・出力は2行のみ。1行に1つ、「カテゴリ名（具体例1・具体例2・具体例3）」の形式で書くこと
 ・説明・番号・記号・前置きは一切書かない"""
-    raw = _call_gemini(prompt, temperature=1.0, max_tokens=300)
+    raw = gemini.generate(prompt, temperature=1.0, max_tokens=300)
     lines = [l.strip("・-* 　") for l in raw.split("\n") if l.strip()]
     lines = [l for l in lines if is_japanese(l)]
     return lines[:2] if len(lines) >= 2 else []
@@ -811,79 +833,95 @@ def _focus_key(display: str) -> str:
     parts = [p for p in re.split(r"[ ・/／、]", core) if p]
     return max(parts, key=len) if parts else ""
 
-def _load_study_history() -> dict:
-    """최근 선정된 문법·관용표현 키, 최근 실행별 문장 끝맺음 구절을 리포에
-    커밋된 JSON에서 읽는다. 파일이 없거나 손상됐으면 빈 이력으로 시작
-    (첫 실행/이력 유실에 안전)."""
-    try:
-        with open(STUDY_HISTORY_FILE, encoding="utf-8") as f:
-            data = json.load(f)
-        return {
-            "grammar": [str(x) for x in data.get("grammar", [])],
-            "idiom": [str(x) for x in data.get("idiom", [])],
-            "ending_phrases": [[str(p) for p in run] for run in data.get("ending_phrases", [])],
-        }
-    except (OSError, ValueError):
-        return {"grammar": [], "idiom": [], "ending_phrases": []}
+class StudyHistoryStore:
+    """반복 회피용 학습 이력 저장소 의존성. 저장 위치·윈도우 크기·문말 감지 방식을
+    바꿀 때는 호출부를 고치는 대신 이 클래스를 교체(또는 다른 구현을 주입)한다."""
 
-def _extract_ending_phrases(sentences: list) -> list:
-    """문장별 끝맺음 마지막 ENDING_PHRASE_LEN자(종결부호 제외)를 추출.
-    형태소 분석 없이 상투적 문말 표현(예: '喫緊の課題である') 반복을 감지하기 위한
-    문자 단위 근사치 — 짧은 문장은 제외, 실행 내 중복은 제거."""
-    phrases = []
-    for s in sentences:
-        if s in _SECTION_HEADERS:
-            continue
-        core = s.rstrip("。！？」』）")
-        if len(core) >= ENDING_PHRASE_LEN:
-            phrases.append(core[-ENDING_PHRASE_LEN:])
-    return list(dict.fromkeys(phrases))
+    def __init__(self, path: str = None, window: int = STUDY_HISTORY_WINDOW,
+                 ending_len: int = ENDING_PHRASE_LEN,
+                 ending_window: int = ENDING_PHRASE_WINDOW,
+                 ending_min_runs: int = ENDING_PHRASE_MIN_RUNS):
+        self.path = STUDY_HISTORY_FILE if path is None else path
+        self.window = window
+        self.ending_len = ending_len
+        self.ending_window = ending_window
+        self.ending_min_runs = ending_min_runs
 
-def _overused_ending_phrases(hist: dict) -> list:
-    """최근 ENDING_PHRASE_WINDOW회 실행 중 ENDING_PHRASE_MIN_RUNS회 이상 등장한
-    문말 표현 목록. 실행 1회당 1표만 세도록(실행 내 중복 제거는 추출 단계에서 이미 처리)."""
-    counts = {}
-    for run_phrases in hist.get("ending_phrases", []):
-        for p in set(run_phrases):
-            counts[p] = counts.get(p, 0) + 1
-    return [p for p, c in counts.items() if c >= ENDING_PHRASE_MIN_RUNS]
+    def load(self) -> dict:
+        """최근 선정된 문법·관용표현 키, 최근 실행별 문장 끝맺음 구절을 리포에
+        커밋된 JSON에서 읽는다. 파일이 없거나 손상됐으면 빈 이력으로 시작
+        (첫 실행/이력 유실에 안전)."""
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                data = json.load(f)
+            return {
+                "grammar": [str(x) for x in data.get("grammar", [])],
+                "idiom": [str(x) for x in data.get("idiom", [])],
+                "ending_phrases": [[str(p) for p in run] for run in data.get("ending_phrases", [])],
+            }
+        except (OSError, ValueError):
+            return {"grammar": [], "idiom": [], "ending_phrases": []}
 
-def _record_generation_history(study_focus: list, sentences: list):
-    """오늘 실제로 채택된 학습 항목과 문장 끝맺음 구절을 이력에 반영하고
-    각각 최근 윈도우만 남겨 저장. 실패해도 본 실행(PDF/메일 발송)에 영향
-    주지 않도록 예외를 삼킨다."""
-    hist = _load_study_history()
-    for kind, _, key in (study_focus or []):
-        if not key:
-            continue
-        bucket = "grammar" if kind == "문법" else "idiom"
-        hist[bucket] = [k for k in hist[bucket] if k != key] + [key]
-        hist[bucket] = hist[bucket][-STUDY_HISTORY_WINDOW:]
-    ending_phrases = _extract_ending_phrases(sentences)
-    if ending_phrases:
-        hist["ending_phrases"] = (hist["ending_phrases"] + [ending_phrases])[-ENDING_PHRASE_WINDOW:]
-    try:
-        with open(STUDY_HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(hist, f, ensure_ascii=False, indent=2)
-            f.write("\n")
-    except OSError as e:
-        print(f"[경고] 학습 이력 저장 실패: {e}")
+    def extract_ending_phrases(self, sentences: list) -> list:
+        """문장별 끝맺음 마지막 ending_len자(종결부호 제외)를 추출.
+        형태소 분석 없이 상투적 문말 표현(예: '喫緊の課題である') 반복을 감지하기 위한
+        문자 단위 근사치 — 짧은 문장은 제외, 실행 내 중복은 제거."""
+        phrases = []
+        for s in sentences:
+            if s in _SECTION_HEADERS:
+                continue
+            core = s.rstrip("。！？」』）")
+            if len(core) >= self.ending_len:
+                phrases.append(core[-self.ending_len:])
+        return list(dict.fromkeys(phrases))
 
-def _sample_avoiding_history(pool: list, n: int, recent_keys: list) -> list:
-    """이력에 없는 항목 우선 샘플링. 회피 가능한 후보가 부족하면(작은 폴백 풀이
-    최근 윈도우에 다 뒤덮인 경우) 회피를 포기하고 전체 풀에서 뽑는다."""
-    candidates = [x for x in pool if _focus_key(x) not in recent_keys]
-    if len(candidates) < n:
-        candidates = pool
-    return random.sample(candidates, min(n, len(candidates)))
+    def overused_endings(self, hist: dict = None) -> list:
+        """최근 ending_window회 실행 중 ending_min_runs회 이상 등장한 문말 표현 목록.
+        실행 1회당 1표만 센다(실행 내 중복 제거는 추출 단계에서 이미 처리)."""
+        hist = self.load() if hist is None else hist
+        counts = {}
+        for run_phrases in hist.get("ending_phrases", []):
+            for p in set(run_phrases):
+                counts[p] = counts.get(p, 0) + 1
+        return [p for p, c in counts.items() if c >= self.ending_min_runs]
 
-def _gemini_study_focus(business: bool, include_idiom: bool = True) -> list:
+    def record(self, study_focus: list, sentences: list):
+        """오늘 실제로 채택된 학습 항목과 문장 끝맺음 구절을 이력에 반영하고
+        각각 최근 윈도우만 남겨 저장. 실패해도 본 실행(PDF/메일 발송)에 영향
+        주지 않도록 예외를 삼킨다."""
+        hist = self.load()
+        for kind, _, key in (study_focus or []):
+            if not key:
+                continue
+            bucket = "grammar" if kind == "문법" else "idiom"
+            hist[bucket] = [k for k in hist[bucket] if k != key] + [key]
+            hist[bucket] = hist[bucket][-self.window:]
+        ending_phrases = self.extract_ending_phrases(sentences)
+        if ending_phrases:
+            hist["ending_phrases"] = (hist["ending_phrases"] + [ending_phrases])[-self.ending_window:]
+        try:
+            with open(self.path, "w", encoding="utf-8") as f:
+                json.dump(hist, f, ensure_ascii=False, indent=2)
+                f.write("\n")
+        except OSError as e:
+            print(f"[경고] 학습 이력 저장 실패: {e}")
+
+    def sample_avoiding(self, pool: list, n: int, recent_keys: list) -> list:
+        """이력에 없는 항목 우선 샘플링. 회피 가능한 후보가 부족하면(작은 폴백 풀이
+        최근 윈도우에 다 뒤덮인 경우) 회피를 포기하고 전체 풀에서 뽑는다."""
+        candidates = [x for x in pool if _focus_key(x) not in recent_keys]
+        if len(candidates) < n:
+            candidates = pool
+        return random.sample(candidates, min(n, len(candidates)))
+
+def _gemini_study_focus(business: bool, gemini: GeminiClient,
+                        history: StudyHistoryStore, include_idiom: bool = True) -> list:
     """오늘의 학습 항목을 Gemini가 능동 선정. (종류, 표시문, 검증키) 리스트 반환.
     JLPT N1/N0: N1 문법 3 + 관용표현 2 / JPT 800·900: N1 문법 3만 (관용 제외 —
     JPT는 관용표현을 배우는 용도가 아님). 실패 시 고정 풀 폴백.
-    직전까지 다룬 항목(최근 STUDY_HISTORY_WINDOW회)은 프롬프트에서 회피 지시하고,
+    직전까지 다룬 항목(최근 window회)은 프롬프트에서 회피 지시하고,
     폴백 샘플링에서도 우선 제외한다 — 특정 단어가 반복돼 새 어휘를 못 배우는 것을 막기 위함."""
-    hist = _load_study_history()
+    hist = history.load()
     idiom_kind = ("ビジネス文書・ビジネス会話でよく使われる慣用表現・決まり文句"
                   if business else "新聞・評論で使われる慣用句・比喩表現")
     avoid_grammar = "、".join(hist["grammar"])
@@ -913,7 +951,7 @@ def _gemini_study_focus(business: bool, include_idiom: bool = True) -> list:
 
 {items_part}
 {avoid_part}・説明・番号・前置きは一切書かない"""
-    raw = _call_gemini(prompt, temperature=1.0, max_tokens=400)
+    raw = gemini.generate(prompt, temperature=1.0, max_tokens=400)
     grammar, idiom = [], []
     for l in (x.strip("・-* 　") for x in raw.split("\n") if x.strip()):
         if l.startswith("文法：") and len(grammar) < 3:
@@ -921,8 +959,8 @@ def _gemini_study_focus(business: bool, include_idiom: bool = True) -> list:
         elif include_idiom and l.startswith("慣用：") and len(idiom) < 2:
             idiom.append(l[len("慣用："):].strip())
     if len(grammar) < 3 or (include_idiom and len(idiom) < 2):
-        grammar = _sample_avoiding_history(_SEED_N1_GRAMMAR, 3, hist["grammar"])
-        idiom = (_sample_avoiding_history(_SEED_BIZ_IDIOM if business else _SEED_IDIOM, 2, hist["idiom"])
+        grammar = history.sample_avoiding(_SEED_N1_GRAMMAR, 3, hist["grammar"])
+        idiom = (history.sample_avoiding(_SEED_BIZ_IDIOM if business else _SEED_IDIOM, 2, hist["idiom"])
                  if include_idiom else [])
         _rlog("[학습 포커스] Gemini 선정 실패 → 고정 풀 폴백(이력 회피 적용)")
     focus = ([("문법", g, _focus_key(g)) for g in grammar]
@@ -937,11 +975,12 @@ def _focus_usage(sentences: list, study_focus: list) -> tuple:
     missing = [d.split("（")[0] for _, d, key in study_focus if not key or key not in text]
     return used, missing
 
-def write_story_with_gemini(theme: str, label: str, attempt: int = 0,
+def write_story_with_gemini(theme: str, label: str, gemini: GeminiClient,
+                            history: StudyHistoryStore, attempt: int = 0,
                             business_doc: bool = False,
                             study_focus: list = None) -> list:
     """주제로 Gemini가 지정 레벨 읽기 자료(20문장) 창작."""
-    if not GEMINI_AVAILABLE or not GEMINI_API_KEY:
+    if not gemini.available:
         print("Gemini API not available.")
         return []
 
@@ -966,7 +1005,7 @@ def write_story_with_gemini(theme: str, label: str, attempt: int = 0,
             _sd = random.choice(
                 _SEED_KEIGO_DOC_INTERNAL if doc_kind == "internal" else _SEED_KEIGO_DOC_EXTERNAL
             )
-            _sf = _gemini_keigo_focus()  # 수동/스케줄 공통: Gemini 능동 선정, 실패 시 고정 풀
+            _sf = _gemini_keigo_focus(gemini)  # 수동/스케줄 공통: Gemini 능동 선정, 실패 시 고정 풀
             if _sf:
                 _rlog(f"[경어 포커스] Gemini 능동 선정: {_sf[0]} / {_sf[1]}")
             else:
@@ -1122,9 +1161,9 @@ def write_story_with_gemini(theme: str, label: str, attempt: int = 0,
         if _i:
             extra_block += ("・次の慣用表現をそれぞれ1回以上、自然な文脈で使うこと\n"
                             + "".join(f"　　・{x}\n" for x in _i))
-    avoid_endings = _overused_ending_phrases(_load_study_history())
+    avoid_endings = history.overused_endings()
     if avoid_endings:
-        _rlog(f"[문말 회피] 최근 {ENDING_PHRASE_MIN_RUNS}회 이상 반복된 표현 회피 지시: "
+        _rlog(f"[문말 회피] 최근 {history.ending_min_runs}회 이상 반복된 표현 회피 지시: "
               + "、".join(avoid_endings))
         extra_block += ("【文末表現の回避 — 直近で繰り返し使われたため使用禁止】\n"
                         "・次の言い回しで文を終えないこと（他の自然な表現に言い換える）：\n"
@@ -1134,7 +1173,7 @@ def write_story_with_gemini(theme: str, label: str, attempt: int = 0,
 
     temp = _TEMP_LADDER[min(attempt, len(_TEMP_LADDER) - 1)]
     print(f"[온도 사다리] attempt {attempt + 1} → temperature={temp}")
-    raw = _call_gemini(prompt, temperature=temp, max_tokens=4096)
+    raw = gemini.generate(prompt, temperature=temp, max_tokens=4096)
     if not raw:
         return []
 
@@ -1171,11 +1210,12 @@ def _retry_theme(label: str, tried_titles: set) -> str:
     tried_titles.add(new_theme)
     return new_theme
 
-def fetch_study_lines(label: str, force_business: bool = False) -> tuple:
+def fetch_study_lines(label: str, deps: "Deps", force_business: bool = False) -> tuple:
     """
     N3/N4: 주제 풀 → 바로 문장 생성
     N2 이상: NHK RSS → 제목 선택 → 문장 생성
     Gemini 503/안전필터 차단 시 → 다른 주제로 재시도
+    deps: 외부 의존성 묶음(Gemini·이력 저장소·뉴스 소스) — 테스트/교체 시 이것만 바꾼다.
     force_business: (경어) 카테고리 전용 — 비즈니스 상황 + 경어 문서 강제.
     경어 발동 경로는 이것 하나뿐이다 (확률 굴림 폐지, 무표기·JPT 레벨은 전부 논술체).
     """
@@ -1185,9 +1225,10 @@ def fetch_study_lines(label: str, force_business: bool = False) -> tuple:
     # 학습 포커스: JLPT N1/N0 = 문법 3 + 관용 2, JPT 800/900 = 문법 3만 (관용 제외)
     study_focus = []
     if label in {"JLPT N1", "JLPT N0"}:
-        study_focus = _gemini_study_focus(force_business)
+        study_focus = _gemini_study_focus(force_business, deps.gemini, deps.history)
     elif label in {"JPT 800", "JPT 900"}:
-        study_focus = _gemini_study_focus(force_business, include_idiom=False)
+        study_focus = _gemini_study_focus(force_business, deps.gemini, deps.history,
+                                          include_idiom=False)
 
     if force_business:
         selected_title, selected_url = pick_topic(label)
@@ -1197,7 +1238,7 @@ def fetch_study_lines(label: str, force_business: bool = False) -> tuple:
         keigo_business = True
 
     if use_rss:
-        title_pairs = crawl_titles(count=10)
+        title_pairs = deps.news.fetch_titles(count=10)
         if not title_pairs:
             print("[RSS 실패] 폴백 주제 사용")
             # RSS 폴백은 논술체 생성 경로이므로 논술형 주제로 통일
@@ -1211,7 +1252,8 @@ def fetch_study_lines(label: str, force_business: bool = False) -> tuple:
             selected_title, selected_url = theme, ""
             title_pairs = [(theme, "")]
         else:
-            selected_title, selected_url = select_title_with_gemini(title_pairs, label)
+            selected_title, selected_url = select_title_with_gemini(
+                title_pairs, label, deps.gemini)
     elif not keigo_business:
         selected_title, selected_url = pick_topic(label)
         title_pairs = [(selected_title, selected_url)]
@@ -1223,7 +1265,8 @@ def fetch_study_lines(label: str, force_business: bool = False) -> tuple:
 
     _MAX_ATTEMPTS = 4
     for attempt in range(_MAX_ATTEMPTS):
-        raw_lines = write_story_with_gemini(selected_title, label, attempt=attempt,
+        raw_lines = write_story_with_gemini(selected_title, label, deps.gemini, deps.history,
+                                            attempt=attempt,
                                             business_doc=keigo_business,
                                             study_focus=study_focus)
 
@@ -1249,7 +1292,7 @@ def fetch_study_lines(label: str, force_business: bool = False) -> tuple:
                 if study_focus:
                     text = "".join(sentences)
                     used_focus = [item for item in study_focus if item[2] and item[2] in text]
-                _record_generation_history(used_focus, sentences)
+                deps.history.record(used_focus, sentences)
                 return selected_title, selected_url, sentences, keigo_business
 
             if use_rss and len(title_pairs) > 1:
@@ -1387,12 +1430,52 @@ def build_pdf(label: str, title: str, url: str,
     print(f"PDF saved: {OUTPUT_PDF} ({len(lines)} lines)")
 
 # ── 이메일 전송 ────────────────────────────────────────
-def send_email(date_str: str, label: str, mode: str):
-    if not GMAIL_ADDRESS or not GMAIL_APP_PW:
-        print("Email credentials not set — skipping.")
-        return
-    if "입력" in str(GMAIL_APP_PW) or len(str(GMAIL_APP_PW)) < 10:
-        print("App password placeholder — skipping email.")
+class Mailer:
+    """메일 전송 의존성(전송 수단만 담당). SMTP 서버·인증 방식을 바꿀 때는
+    호출부를 고치는 대신 이 클래스를 교체(또는 다른 구현을 주입)한다.
+    수신자 결정 규칙은 정책이므로 send_email() 쪽에 남겨둔다."""
+
+    def __init__(self, address: str = None, app_password: str = None,
+                 host: str = "smtp.gmail.com", port: int = 587):
+        self.address = GMAIL_ADDRESS if address is None else address
+        self.app_password = GMAIL_APP_PW if app_password is None else app_password
+        self.host = host
+        self.port = port
+
+    @property
+    def configured(self) -> bool:
+        """자격증명 누락·플레이스홀더 여부 판정 (호출부 조기 반환용)."""
+        if not self.address or not self.app_password:
+            print("Email credentials not set — skipping.")
+            return False
+        if "입력" in str(self.app_password) or len(str(self.app_password)) < 10:
+            print("App password placeholder — skipping email.")
+            return False
+        return True
+
+    def send(self, recipients: list, subject: str, body: str,
+             attachment_path: str = None, attachment_name: str = None):
+        msg = MIMEMultipart()
+        msg["From"] = self.address
+        msg["To"] = ", ".join(recipients)
+        msg["Subject"] = subject
+        msg.attach(MIMEText(body, "plain", "utf-8"))
+        if attachment_path:
+            with open(attachment_path, "rb") as f:
+                part = MIMEBase("application", "octet-stream")
+                part.set_payload(f.read())
+                encoders.encode_base64(part)
+                part.add_header("Content-Disposition",
+                                f'attachment; filename="{attachment_name}"')
+                msg.attach(part)
+        with smtplib.SMTP(self.host, self.port) as server:
+            server.starttls()
+            server.login(self.address, self.app_password)
+            server.send_message(msg)
+
+def send_email(date_str: str, label: str, mode: str, mailer: Mailer):
+    """수신자·제목·본문 정책을 정하고 전송 자체는 주입된 mailer에 위임한다."""
+    if not mailer.configured:
         return
     if not os.path.exists(OUTPUT_PDF):
         print(f"[오류] PDF 파일 없음: {OUTPUT_PDF} — 이메일 전송 건너뜀.")
@@ -1405,39 +1488,43 @@ def send_email(date_str: str, label: str, mode: str):
             # 수동 실행: secrets.MANUAL_MAIL_TO 단독 수신
             recipients = [MANUAL_MAIL_TO]
         else:
-            recipients = [GMAIL_ADDRESS]
+            recipients = [mailer.address]
             for addr in re.split(r"[,;\s]+", EMAIL_RECIPIENTS):
                 addr = addr.strip()
                 if addr and addr not in recipients:
                     recipients.append(addr)
-        msg = MIMEMultipart()
-        msg["From"] = GMAIL_ADDRESS
-        msg["To"] = ", ".join(recipients)
         _test_tag = " [TEST]" if MANUAL_RUN else ""
-        msg["Subject"] = f"[Japanese Study]{_test_tag} {date_str} — {label}"
+        subject = f"[Japanese Study]{_test_tag} {date_str} — {label}"
         # 본문은 기존 형태 유지. 수동 실행 시 테스트 안내 한 줄만 추가
         # (레벨·주제 상세와 생성 로그는 결과 알림 메일 전용)
         body = f"Today's Japanese study material.\nLevel: {label}\nMode: {mode}"
         if MANUAL_RUN:
             body += "\n이 메일은 테스트용 메일 입니다"
-        msg.attach(MIMEText(body, "plain", "utf-8"))
-        with open(OUTPUT_PDF, "rb") as f:
-            part = MIMEBase("application", "octet-stream")
-            part.set_payload(f.read())
-            encoders.encode_base64(part)
-            part.add_header("Content-Disposition",
-                            f'attachment; filename="JPN_{date_str[:10]}.pdf"')
-            msg.attach(part)
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.starttls()
-            server.login(GMAIL_ADDRESS, GMAIL_APP_PW)
-            server.send_message(msg)
+        mailer.send(recipients, subject, body,
+                    attachment_path=OUTPUT_PDF,
+                    attachment_name=f"JPN_{date_str[:10]}.pdf")
         print(f"Email sent → {', '.join(recipients)}")
     except Exception as e:
         print(f"Email failed: {e}")
 
+# ── 의존성 조립 (컴포지션 루트) ────────────────────────
+class Deps:
+    """생성 파이프라인이 쓰는 외부 의존성 묶음.
+    기능 변경 시 함수 본문을 고치는 대신 여기에 주입되는 구현을 교체한다
+    (테스트에서는 같은 인터페이스의 대역(stub)을 넣으면 된다)."""
+
+    def __init__(self, gemini: GeminiClient = None,
+                 history: StudyHistoryStore = None,
+                 news: NewsSource = None,
+                 mailer: Mailer = None):
+        self.gemini = gemini or GeminiClient()
+        self.history = history or StudyHistoryStore()
+        self.news = news or NewsSource()
+        self.mailer = mailer or Mailer()
+
 # ── 메인 ──────────────────────────────────────────────
-def main():
+def main(deps: Deps = None):
+    deps = deps or Deps()
     today = datetime.date.today()
     date_str = today.strftime("%Y-%m-%d (%a)")
     week_num = get_week_of_month(today)
@@ -1484,7 +1571,7 @@ def main():
         _rlog(f"[경어 카테고리] 기준 레벨 {label} — 비즈니스 상황에서만 경어 문서 생성")
 
     title, url, sentences, keigo_business = fetch_study_lines(
-        label, force_business=force_business)
+        label, deps, force_business=force_business)
 
     if not sentences:
         raise RuntimeError(
@@ -1513,7 +1600,7 @@ def main():
         pass
 
     build_pdf(pdf_label, title, url, sentences, date_str, week_label, mode)
-    send_email(date_str, mail_label, mode)
+    send_email(date_str, mail_label, mode, deps.mailer)
     print("Done!")
 
 if __name__ == "__main__":
