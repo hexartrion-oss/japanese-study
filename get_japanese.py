@@ -456,7 +456,7 @@ def _get_topic_pool(label: str) -> list:
 # gemini-3.6-flash는 3.5가 서비스 종료되는 경우를 대비한 예비 폴백 —
 # 아직 사용 이력이 없다면 무료 등급에서 실제로 제공되는지 미검증 상태이니
 # 이 모델까지 폴백이 내려가는 로그가 보이면 결과를 확인할 것.
-_GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.5-flash", "gemini-3.6-flash"]
+_GEMINI_MODELS = ["gemini-3-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.5-flash", "gemini-3.6-flash"]  # TEMP: probe gemini-3-flash first for verification, revert before merge
 
 class GeminiClient:
     """Gemini 호출 의존성. 모델 목록·재시도 정책을 바꿀 때는 호출부 함수 본문을
