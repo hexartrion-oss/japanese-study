@@ -17,17 +17,19 @@
   부족 / 경어 상투구 과다)를 확인한다. 특정 레벨·주제에서만 반복되면
   일회성 Gemini 응답 품질 문제일 가능성이 높으므로 재실행으로 대개
   해결된다.
-- **`[Gemini] 모든 모델 실패`** — `_GEMINI_MODELS`의 네 모델(현재
-  `gemini-2.5-flash` → `gemini-2.5-flash-lite` → `gemini-3.5-flash` →
-  `gemini-3.6-flash`) 모두 429(quota)/503/기타 오류로 실패한 경우다. quota
-  초과면 시간을 두고 재실행, 모델 자체가 폐기·이름 변경되었다면
-  `_GEMINI_MODELS` 목록을 현재 사용 가능한 모델명으로 갱신해야 한다.
-  마지막 `gemini-3.6-flash`는 `gemini-3.5-flash` 종료에 대비한 예비
+- **`[Gemini] 모든 모델 실패`** — `_GEMINI_MODELS`의 다섯 모델(현재
+  `gemini-2.5-flash` → `gemini-2.5-flash-lite` → `gemini-3-flash-preview` →
+  `gemini-3.5-flash` → `gemini-3.6-flash`) 모두 429(quota)/503/기타
+  오류로 실패한 경우다. quota 초과면 시간을 두고 재실행, 모델 자체가
+  폐기·이름 변경되었다면 `_GEMINI_MODELS` 목록을 현재 사용 가능한
+  모델명으로 갱신해야 한다. `gemini-3-flash-preview`는 실제 호출로
+  검증됨(1차 시도에서 20문장 정상 생성, thinking 절단 없음). 마지막
+  `gemini-3.6-flash`는 `gemini-3.5-flash` 종료에 대비한 예비
   폴백으로 미리 추가해 둔 것 — 아직 실제 호출 이력이 없다면 무료 등급
   제공 여부가 검증되지 않은 상태다(폴백이 여기까지 내려가는 로그가
   보이면 성공/실패 여부를 확인할 것).
   - **`[Gemini] 모든 모델이 요청 한도(quota) 초과로 실패` 메시지가 보이면**
-    네 모델 전부 429로 실패했다는 뜻이다. 이 경우 결과 알림 메일
+    다섯 모델 전부 429로 실패했다는 뜻이다. 이 경우 결과 알림 메일
     본문(`run_log.txt`가 첨부됨)에도 Google AI Studio 결제 설정 링크가
     자동으로 포함되므로, 콘솔 로그를 따로 열지 않아도 결제 전환
     필요 여부를 바로 알 수 있다. 404 등 quota가 아닌 오류로 전부

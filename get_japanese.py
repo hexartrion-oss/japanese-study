@@ -452,11 +452,13 @@ def _get_topic_pool(label: str) -> list:
 
 # ── Gemini API 공통 호출 ──────────────────────────────
 # gemini-2.0-flash / gemini-2.0-flash-lite는 2026-06-01부로 Google이 서비스 종료함.
-# 2.5세대를 우선 유지하고, 마지막 폴백은 3세대(3.5 → 3.6 순)로 전환.
+# 2.5세대를 우선 유지하고, gemini-3-flash-preview를 2.5-flash-lite 다음
+# 폴백으로 추가(실제 호출 검증 완료 — 1차 시도에서 20문장 정상 생성,
+# thinking 절단 없음). 마지막 폴백은 3.5 → 3.6 순으로 유지.
 # gemini-3.6-flash는 3.5가 서비스 종료되는 경우를 대비한 예비 폴백 —
 # 아직 사용 이력이 없다면 무료 등급에서 실제로 제공되는지 미검증 상태이니
 # 이 모델까지 폴백이 내려가는 로그가 보이면 결과를 확인할 것.
-_GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.5-flash", "gemini-3.6-flash"]
+_GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-flash-preview", "gemini-3.5-flash", "gemini-3.6-flash"]
 
 class GeminiClient:
     """Gemini 호출 의존성. 모델 목록·재시도 정책을 바꿀 때는 호출부 함수 본문을
