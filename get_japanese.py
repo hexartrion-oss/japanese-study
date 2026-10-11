@@ -452,8 +452,11 @@ def _get_topic_pool(label: str) -> list:
 
 # ── Gemini API 공통 호출 ──────────────────────────────
 # gemini-2.0-flash / gemini-2.0-flash-lite는 2026-06-01부로 Google이 서비스 종료함.
-# 2.5세대를 우선 유지하고, 마지막 폴백만 3세대(3.5)로 전환.
-_GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.5-flash"]
+# 2.5세대를 우선 유지하고, 마지막 폴백은 3세대(3.5 → 3.6 순)로 전환.
+# gemini-3.6-flash는 3.5가 서비스 종료되는 경우를 대비한 예비 폴백 —
+# 아직 사용 이력이 없다면 무료 등급에서 실제로 제공되는지 미검증 상태이니
+# 이 모델까지 폴백이 내려가는 로그가 보이면 결과를 확인할 것.
+_GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.5-flash", "gemini-3.6-flash"]
 
 class GeminiClient:
     """Gemini 호출 의존성. 모델 목록·재시도 정책을 바꿀 때는 호출부 함수 본문을
@@ -473,6 +476,7 @@ class GeminiClient:
         if not self.available:
             return ""
         client = google_genai.Client(api_key=self.api_key)
+        saw_quota_error = False
         for model_id in self.models:
             print(f"[Gemini] 모델 시도: {model_id}")
             for attempt in range(2):
@@ -496,6 +500,8 @@ class GeminiClient:
                 except Exception as e:
                     err = str(e)
                     is_quota = "429" in err or "quota" in err.lower()
+                    if is_quota:
+                        saw_quota_error = True
                     if is_quota and attempt == 0:
                         m = re.search(r"retry in (\d+(?:\.\d+)?)", err)
                         wait = int(float(m.group(1))) + 5 if m else 60
@@ -519,7 +525,15 @@ class GeminiClient:
                     # 즉시 끝내지 말고 폴백 리스트의 다음 모델로 넘어간다.
                     print(f"[Gemini] {model_id} API 오류(폴백 전환): {e}")
                     break
-        print("[Gemini] 모든 모델 실패")
+        if saw_quota_error:
+            # quota(429)로 인한 전멸은 run_log.txt를 통해 결과 알림 메일
+            # 본문에도 노출시켜, 콘솔 로그를 직접 열어보지 않아도 결제
+            # 설정 필요 여부를 바로 알 수 있게 한다.
+            _rlog("[Gemini] 모든 모델이 요청 한도(quota) 초과로 실패 — 무료 등급 한도를"
+                  " 초과했을 가능성이 높습니다. Google AI Studio에서 결제 설정(유료 등급"
+                  " 전환)을 검토하세요: https://aistudio.google.com/usage")
+        else:
+            print("[Gemini] 모든 모델 실패")
         return ""
 
 # ── 폰트 탐색 ─────────────────────────────────────────
